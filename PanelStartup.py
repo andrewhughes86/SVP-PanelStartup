@@ -1,10 +1,11 @@
 # Script version 1.0 
 
 # TODO: Create script to automate cutting the "L" shape notches in the back of the sheathing.
-# TODO: Need to understand when bumps are framed at Melvin or after. Then change bumpEast() and bumpWest() cut the new copy of new unified sheathing if there is a return.
+# TODO: Need to understand when bumps are framed at Melvin vs after. Then change bumpEast() and bumpWest() cut the new copy of sheathing.
 # TODO: May need to add an easily to change variable for return diminesion in case it changes from project to project.
 # TODO: Add logic to find non standard bumps. See 8&L Panel 10014.
 # TODO: Change post so it displays the comment from Fusion.
+# TODO: Test return brick detail functions.
 
 import adsk.core, adsk.fusion, math, re, subprocess, os, time, webbrowser, traceback
 
@@ -28,7 +29,7 @@ def run(context):
     stockBody()             # Create a stock body for Charles setup.
     changeUnits()           # Change units to inches.
     idFoam()                # Identify and rename foam bodies.
-    idframe()               # Identify and rename frame bodies.
+    idFrame()               # Identify and rename frame bodies.
     idStuds()               # Identify and rename stud bodies.
     idTrack()               # Identify and rename track bodies.
     idRotatedBump()         # Identify and rename bump bodies that are on an angle.
@@ -256,7 +257,7 @@ def idFoam():
     except:
         ui.messageBox(f"identifyFoam(): failed:\n{traceback.format_exc()}")
 
-def idframe():
+def idFrame():
     tolerance = in_cm(.001)   
     try:
         # Bump stud 6" X 2.5"
@@ -602,7 +603,7 @@ def bumpEast():             # This function cuts the "Stock" and "Foam" bodies t
         sketch = sketches.add(xzPlane)
 
         # Offset from bump
-        x_offset = 32 #inches
+        x_offset = 31 #inches
         x_offset = (x_offset * 2.54 * -1) # convert to CM and change to be negative
 
         # Draw rectangle in sketch plane coordinates (X = horizontal, Y = vertical)
@@ -618,7 +619,6 @@ def bumpEast():             # This function cuts the "Stock" and "Foam" bodies t
 
         # Hide Stock body
         stock_body.isVisible = False
-
 
         # Cut foam body
         if foamresult == True:
@@ -676,7 +676,7 @@ def bumpWest():             # This function cuts the "Stock" and "Foam" bodies t
         min_x = bb.minPoint.x
 
         # Offset from bump
-        x_offset = 32 #inches
+        x_offset = 31 #inches
         x_offset = (x_offset * 2.54 * -1) # convert to CM and change to be negative
 
         # Draw rectangle in sketch plane coordinates (X = horizontal, Y = vertical)
@@ -1082,7 +1082,7 @@ def camWorkspace():
     except:
         ui.messageBox(f"camWorkspace(): failed:\n{traceback.format_exc()}")
 
-def brickDetail():
+def idBrickDetail():
     try:
         offset = in_cm(0.5)
         faces_at_offset = []
@@ -1111,7 +1111,69 @@ def brickDetail():
             return False
 
     except:
-        ui.messageBox(f"brickDetail() failed:\n{traceback.format_exc()}")
+        ui.messageBox(f"idBrickDetail() failed:\n{traceback.format_exc()}")
+
+def idEastReturnBrickDetail():
+    try:
+        offset = in_cm(0.5)
+        faces_at_offset = []
+
+        # Step 1: Find the "Exterior" body
+        exterior_body = None
+        for body in rootComp.bRepBodies:
+            if body.name == "Exterior":
+                exterior_body = body
+                break
+
+        # Step 2: Maximum Y of Exterior body
+        max_x = exterior_body.boundingBox.maxPoint.x
+
+        # Step 3: Find faces exactly offset_inch below max Y
+        target_x = max_x - offset
+        for face in exterior_body.faces:
+            face_x = face.centroid.x
+            if abs(face_x - target_x) <= 1e-6:  # tiny tolerance for float comparison
+                faces_at_offset.append(face)
+
+        if len(faces_at_offset) > 0:
+            return True
+        
+        else:
+            return False
+
+    except:
+        ui.messageBox(f"idEastReturnBrickDetail() failed:\n{traceback.format_exc()}")
+
+def idWestReturnBrickDetail():
+    try:
+        offset = in_cm(0.5)
+        faces_at_offset = []
+
+        # Step 1: Find the "Exterior" body
+        exterior_body = None
+        for body in rootComp.bRepBodies:
+            if body.name == "Exterior":
+                exterior_body = body
+                break
+
+        # Step 2: Maximum Y of Exterior body
+        min_x = exterior_body.boundingBox.minPoint.x
+
+        # Step 3: Find faces exactly offset_inch below max Y
+        target_x = min_x + offset
+        for face in exterior_body.faces:
+            face_x = face.centroid.x
+            if abs(face_x - target_x) <= 1e-6:  # tiny tolerance for float comparison
+                faces_at_offset.append(face)
+
+        if len(faces_at_offset) > 0:
+            return True
+        
+        else:
+            return False
+
+    except:
+        ui.messageBox(f"idWestReturnBrickDetail() failed:\n{traceback.format_exc()}")
 
 def melvinSetup():
     try:
@@ -1356,10 +1418,11 @@ def charlesSetup():
             if windows == True:
                 template_names_to_load.append("Charles Window Bevel")
 
-            if any("Bump" in body.name for body in rootComp.bRepBodies):
+            # if any("Bump" in body.name for body in rootComp.bRepBodies):
+            if eastBump == True:
                 template_names_to_load.append("Charles Bump Clean Up FM")
 
-            if brickDetail():
+            if idBrickDetail():
                 template_names_to_load.extend([
                         "Charles Brick Feature EM",
                         "Charles Brick Feature FM"
@@ -1377,6 +1440,27 @@ def charlesSetup():
                         "Charles Return EM",
                         "Charles Return FM"
                     ])
+                
+            if idWestReturnBrickDetail():
+                template_names_to_load.extend([
+                        "Charles Return Brick FM"
+                    ])
+                eastReturnBrick = setup.operations.itemByName('Charles Return Brick FM')
+                eastReturnBrick.parameters.itemByName('bottomHeight_offset').expression = '-3.4 in'
+                eastReturnBrick.parameters.itemByName('topHeight_offset').expression = '-3.4 in'
+                eastReturnBrick.parameters.itemByName('feedHeight_offset').expression = '-3.4 in'
+                eastReturnBrick.parameters.itemByName('retractHeight_offset').expression = '-3.4 in'
+            
+                
+            if idEastReturnBrickDetail():
+                template_names_to_load.extend([
+                        "Charles Return Brick FM"
+                    ])
+                westReturnBrick = setup.operations.itemByName('Charles Return Brick FM')
+                westReturnBrick.parameters.itemByName('bottomHeight_offset').expression = '-3.4 in'
+                westReturnBrick.parameters.itemByName('topHeight_offset').expression = '-3.4 in'
+                westReturnBrick.parameters.itemByName('feedHeight_offset').expression = '-3.4 in'
+                westReturnBrick.parameters.itemByName('retractHeight_offset').expression = '-3.4 in'
         
             camManager = adsk.cam.CAMManager.get()
             libraryManager = camManager.libraryManager
