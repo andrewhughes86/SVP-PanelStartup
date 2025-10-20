@@ -6,6 +6,8 @@
 # TODO: Add logic to find non standard bumps. See 8&L Panel 10014.
 # TODO: Change post so it displays the comment from Fusion.
 # TODO: Test return brick detail functions.
+# TODO: Reorder toolpath by tool number.
+# TODO: Change name of idTrack
 
 import adsk.core, adsk.fusion, math, re, subprocess, os, time, webbrowser, traceback
 
@@ -467,13 +469,15 @@ def idBump():
             warning_icon = adsk.core.MessageBoxIconTypes.WarningIconType
             eastBumpQ = ui.messageBox(question_text, "Warning", button_type, warning_icon)
             if eastBumpQ == adsk.core.DialogResults.DialogYes:
+                eastBump = True
                 bumpEast()
             else:
                 question_text = """Frame components could not be detected. \nIs there a West bump? (left side)""" 
                 button_type = adsk.core.MessageBoxButtonTypes.YesNoButtonType
                 warning_icon = adsk.core.MessageBoxIconTypes.WarningIconType
-                eastBumpQ = ui.messageBox(question_text, "Warning", button_type, warning_icon)
-                if eastBumpQ == adsk.core.DialogResults.DialogYes:
+                westBumpQ = ui.messageBox(question_text, "Warning", button_type, warning_icon)
+                if westBumpQ == adsk.core.DialogResults.DialogYes:
+                    westBump = True
                     bumpWest()
 
     except:
@@ -886,10 +890,6 @@ def melvinOrgin():
         new_point = constructionPoints.add(point_input)
         new_point.name = 'Melvin WCS'
         app.activeViewport.fit()
-
-
-
-
 
         # Back-bottom-left corner
         bl_corner_x, bl_corner_y, bl_corner_z = min_x, max_y, min_z
@@ -1445,22 +1445,13 @@ def charlesSetup():
                 template_names_to_load.extend([
                         "Charles Return Brick FM"
                     ])
-                eastReturnBrick = setup.operations.itemByName('Charles Return Brick FM')
-                eastReturnBrick.parameters.itemByName('bottomHeight_offset').expression = '-3.4 in'
-                eastReturnBrick.parameters.itemByName('topHeight_offset').expression = '-3.4 in'
-                eastReturnBrick.parameters.itemByName('feedHeight_offset').expression = '-3.4 in'
-                eastReturnBrick.parameters.itemByName('retractHeight_offset').expression = '-3.4 in'
-            
+        
                 
             if idEastReturnBrickDetail():
                 template_names_to_load.extend([
                         "Charles Return Brick FM"
                     ])
-                westReturnBrick = setup.operations.itemByName('Charles Return Brick FM')
-                westReturnBrick.parameters.itemByName('bottomHeight_offset').expression = '-3.4 in'
-                westReturnBrick.parameters.itemByName('topHeight_offset').expression = '-3.4 in'
-                westReturnBrick.parameters.itemByName('feedHeight_offset').expression = '-3.4 in'
-                westReturnBrick.parameters.itemByName('retractHeight_offset').expression = '-3.4 in'
+        
         
             camManager = adsk.cam.CAMManager.get()
             libraryManager = camManager.libraryManager
@@ -1473,11 +1464,30 @@ def charlesSetup():
             for template_name in template_names_to_load:
                 found_template = [item for item in cloud_templates if item.name == template_name][0] 
                 setup.createFromCAMTemplate(found_template)
+
+            if idWestReturnBrickDetail():
+                eastReturnBrick = setup.operations.itemByName('Charles Return Brick FM')
+                eastReturnBrick.parameters.itemByName('bottomHeight_offset').expression = '-3.4 in'
+                eastReturnBrick.parameters.itemByName('topHeight_offset').expression = '-3.4 in'
+                eastReturnBrick.parameters.itemByName('feedHeight_offset').expression = '-3.4 in'
+                eastReturnBrick.parameters.itemByName('retractHeight_offset').expression = '-3.4 in'
+            
+                
+            if idEastReturnBrickDetail():
+                westReturnBrick = setup.operations.itemByName('Charles Return Brick FM')
+                westReturnBrick.parameters.itemByName('bottomHeight_offset').expression = '-3.4 in'
+                westReturnBrick.parameters.itemByName('topHeight_offset').expression = '-3.4 in'
+                westReturnBrick.parameters.itemByName('feedHeight_offset').expression = '-3.4 in'
+                westReturnBrick.parameters.itemByName('retractHeight_offset').expression = '-3.4 in'
         else:
             addMessage("'Foam' body was not detected. The Charles setup will not be created.")
 
         if any("Bump" in body.name for body in rootComp.bRepBodies):
             bumpMod()
+
+        if westBump == True or eastBump == True:
+            bumpMod()
+
     except:
         ui.messageBox(f"{traceback.format_exc()}", "charlesSetup(): failed!")
 
@@ -1495,15 +1505,14 @@ def bumpMod():              # This function modifies the Facinghead toolpath if 
                 facinghead_input.parameters.itemByName('passAngle').expression = '0 deg'
                 facinghead_input.parameters.itemByName('transitionType').expression = "'straight-line'"
                 cam.generateToolpath(facinghead_input)
+                
             elif westBump == True:
                 # Modify 'Facinghead' toolpath
                 facinghead_input = setup.operations.itemByName('Facinghead')
                 facinghead_input.parameters.itemByName('passAngle').expression = '180 deg'
                 facinghead_input.parameters.itemByName('transitionType').expression = "'straight-line'"
-                cam.generateToolpath(facinghead_input)
-                # Remove roughing passes from 'Bump Clean Up FM'
-                bumpCleanUp_input = setup.operations.itemByName('Bump Clean Up FM')
-                bumpCleanUp_input.parameters.itemByName('doRoughPass').expression = 'false'
+                cam.generateToolpath(facinghead_input) 
+                
             else:
                 None
     except:
@@ -1538,76 +1547,78 @@ def idThinFoam():
 def errorDetection(): 
     try: 
         # Find the edge of the stud body for our WCS
-        # foam = [body for body in rootComp.bRepBodies if body.name.startswith("Foam")]
-        for body in rootComp.bRepBodies:
-            if body.name == "Foam":
-                foamBody = body
-
-        # Get the bounding boxes for each body
-        foam = foamBody.boundingBox
-    
-        # Find the edge of the stud body for our WCS
         sheathing = [body for body in rootComp.bRepBodies if body.name.startswith("Sheathing")]
 
-        # Initialize min and max values
-        min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
-        max_x, max_y, max_z = float('-inf'), float('-inf'), float('-inf')
+        if any("Sheathing" in body.name for body in rootComp.bRepBodies):
 
-        # Loop through all "Sheathing" bodies and expand bounds
-        for body in sheathing:
-            box = body.boundingBox
-            min_x = min(min_x, box.minPoint.x)
-            min_y = min(min_y, box.minPoint.y)
-            min_z = min(min_z, box.minPoint.z)
-            max_x = max(max_x, box.maxPoint.x)
-            max_y = max(max_y, box.maxPoint.y)
-            max_z = max(max_z, box.maxPoint.z)
+            # Initialize min and max values
+            min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
+            max_x, max_y, max_z = float('-inf'), float('-inf'), float('-inf')
 
-        # Create max and min "Sheathing" points.
-        sheathing_max_point = adsk.core.Point3D.create(max_x, max_y, max_z)
-        sheathing_min_point = adsk.core.Point3D.create(min_x, min_y, min_z)
-        
-        # Compare "Sheathing" and "Track" max and min values.
-        max_z_result = abs(abs(sheathing_max_point.z) - abs(track_max_point.z))
-        if max_z_result > .002:
-            max_z_result = (max_z_result / 2.54)
-            addMessage(f"Difference between 'Sheating' and 'Frame' detected. \n \u2022 Z max: {max_z_result:.3f}in")
+            # Loop through all "Sheathing" bodies and expand bounds
+            for body in sheathing:
+                box = body.boundingBox
+                min_x = min(min_x, box.minPoint.x)
+                min_y = min(min_y, box.minPoint.y)
+                min_z = min(min_z, box.minPoint.z)
+                max_x = max(max_x, box.maxPoint.x)
+                max_y = max(max_y, box.maxPoint.y)
+                max_z = max(max_z, box.maxPoint.z)
 
-        min_z_result = abs(abs(sheathing_min_point.z) - abs(track_min_point.z))
-        if min_z_result > .002: 
-            min_z_result = (min_z_result / 2.54)
-            addMessage(f"Difference between 'Sheating' and 'Frame' detected. \n \u2022 Z min: {min_z_result:.3f}in")
+            # Create max and min "Sheathing" points.
+            sheathing_max_point = adsk.core.Point3D.create(max_x, max_y, max_z)
+            sheathing_min_point = adsk.core.Point3D.create(min_x, min_y, min_z)
+            
+            # Compare "Sheathing" and "Track" max and min values.
+            max_z_result = abs(abs(sheathing_max_point.z) - abs(track_max_point.z))
+            if max_z_result > .002:
+                max_z_result = (max_z_result / 2.54)
+                addMessage(f"Difference between 'Sheating' and 'Frame' detected. \n \u2022 Z max: {max_z_result:.3f}in")
 
-        max_x_result = abs(abs(sheathing_max_point.x) - abs(track_max_point.x))
-        if max_x_result > .002: 
-            max_x_result = (max_x_result / 2.54)
-            addMessage(f"Difference between 'Sheating' and 'Frame' detected. \n \u2022 X max: {max_x_result:.3f}in")
+            min_z_result = abs(abs(sheathing_min_point.z) - abs(track_min_point.z))
+            if min_z_result > .002: 
+                min_z_result = (min_z_result / 2.54)
+                addMessage(f"Difference between 'Sheating' and 'Frame' detected. \n \u2022 Z min: {min_z_result:.3f}in")
 
-        min_x_result = abs(abs(sheathing_min_point.x) - abs(track_min_point.x))
-        if min_x_result > .002: 
-            min_x_result = (min_x_result / 2.54)
-            addMessage(f"Difference between 'Sheating' and 'Frame' detected. \n \u2022 X min: {min_x_result:.3f}in")
+            max_x_result = abs(abs(sheathing_max_point.x) - abs(track_max_point.x))
+            if max_x_result > .002: 
+                max_x_result = (max_x_result / 2.54)
+                addMessage(f"Difference between 'Sheating' and 'Frame' detected. \n \u2022 X max: {max_x_result:.3f}in")
 
-        # Compare "Sheathing" and "Foam" max and min values.
-        foam_max_z_result = abs(abs(sheathing_max_point.z) - abs(foam.maxPoint.z))
-        if foam_max_z_result > .002:
-            foam_max_z_result = (foam_max_z_result / 2.54)
-            addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 Z max: {foam_max_z_result:.3f}in")
+            min_x_result = abs(abs(sheathing_min_point.x) - abs(track_min_point.x))
+            if min_x_result > .002: 
+                min_x_result = (min_x_result / 2.54)
+                addMessage(f"Difference between 'Sheating' and 'Frame' detected. \n \u2022 X min: {min_x_result:.3f}in")
 
-        foam_min_z_result = abs(abs(sheathing_min_point.z) - abs(foam.minPoint.z))
-        if foam_min_z_result > .002: 
-            foam_min_z_result = (foam_min_z_result / 2.54)
-            addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 Z min: {foam_min_z_result:.3f}in")
+        if any("Foam" in body.name for body in rootComp.bRepBodies):
+            # foam = [body for body in rootComp.bRepBodies if body.name.startswith("Foam")]
+            for body in rootComp.bRepBodies:
+                if body.name == "Foam":
+                    foamBody = body
 
-        foam_max_x_result = abs(abs(sheathing_max_point.x) - abs(foam.maxPoint.x))
-        if foam_max_x_result > .002: 
-            foam_max_x_result = (foam_max_x_result / 2.54)
-            addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 X max: {foam_max_x_result:.3f}in")
+            # Get the bounding boxes for each body
+            foam = foamBody.boundingBox
 
-        foam_min_x_result = abs(abs(sheathing_min_point.x) - abs(foam.minPoint.x))
-        if foam_min_x_result > .002: 
-            foam_min_x_result = (min_x_result / 2.54)
-            addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 X min: {foam_min_x_result:.3f}in")
+            # Compare "Sheathing" and "Foam" max and min values.
+            foam_max_z_result = abs(abs(sheathing_max_point.z) - abs(foam.maxPoint.z))
+            if foam_max_z_result > .002:
+                foam_max_z_result = (foam_max_z_result / 2.54)
+                addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 Z max: {foam_max_z_result:.3f}in")
+
+            foam_min_z_result = abs(abs(sheathing_min_point.z) - abs(foam.minPoint.z))
+            if foam_min_z_result > .002: 
+                foam_min_z_result = (foam_min_z_result / 2.54)
+                addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 Z min: {foam_min_z_result:.3f}in")
+
+            foam_max_x_result = abs(abs(sheathing_max_point.x) - abs(foam.maxPoint.x))
+            if foam_max_x_result > .002: 
+                foam_max_x_result = (foam_max_x_result / 2.54)
+                addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 X max: {foam_max_x_result:.3f}in")
+
+            foam_min_x_result = abs(abs(sheathing_min_point.x) - abs(foam.minPoint.x))
+            if foam_min_x_result > .002: 
+                foam_min_x_result = (min_x_result / 2.54)
+                addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 X min: {foam_min_x_result:.3f}in")
             
     except:
         ui.messageBox(f"ErrorDection(): failed:\n{traceback.format_exc()}")
