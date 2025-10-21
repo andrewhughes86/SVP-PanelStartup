@@ -4,12 +4,10 @@
 # TODO: Need to understand when bumps are framed at Melvin vs after. Then change bumpEast() and bumpWest() cut the new copy of sheathing.
 # TODO: May need to add an easily to change variable for return diminesion in case it changes from project to project.
 # TODO: Add logic to find non standard bumps. See 8&L Panel 10014.
-# TODO: Change post so it displays the comment from Fusion.
-# TODO: Test return brick detail functions.
-# TODO: Reorder toolpath by tool number.
-# TODO: Change name of idTrack
+# TODO: Test return brick detail functions. EAST is good. 
+# TODO: Change name of idFrame
 
-import adsk.core, adsk.fusion, math, re, subprocess, os, time, webbrowser, traceback
+import adsk.core, adsk.fusion, math, re, subprocess, os, sys, time, webbrowser, traceback
 
 def run(context):
     # Set global variables
@@ -25,9 +23,10 @@ def run(context):
     global script_summary  
     script_summary = []
 
-    # list of functions 
+    # list of functions
     rotateBodiesToFront()   # Rotates the bodies around the Z axis so the front of the panel is the front view.
     moveBodiesToOrgin()     # Moves all bodies to the origin.
+    openPDF()               # Opens the PDF drawing for the panel.
     stockBody()             # Create a stock body for Charles setup.
     changeUnits()           # Change units to inches.
     idFoam()                # Identify and rename foam bodies.
@@ -37,7 +36,6 @@ def run(context):
     idRotatedBump()         # Identify and rename bump bodies that are on an angle.
     idBump()                # Identify and rename bump bodies.
     idWindows()             # Identifies windows and determines if the window bevel toolpath is needed.
-    openBIM()               # Opens BIM in the browser.
     idOrigin()              # Identifies WCS X and Y axis from the stud and track bodies.
     idReturn()              # Is there a return on the right side of the panel that would interfer with WCS?
     melvinOrgin()           # Creates a sketch and contruction point for the Melvin WCS.
@@ -86,7 +84,7 @@ def rotateBodiesToFront():
         rotation_axis = current_normal.crossProduct(target_normal)
 
         # Check for edge cases: already aligned or exactly opposite
-        if rotation_axis.length < 1e-6:
+        if rotation_axis.length < .002:
             dot = current_normal.dotProduct(target_normal)
             if dot > 0:
                 #ui.messageBox("Face is already aligned with target. No rotation needed.")
@@ -175,7 +173,7 @@ def moveBodiesToOrgin():
         app.activeViewport.fit()
     except:
         ui.messageBox(f"moveBodiesToOrgin(): failed:\n{traceback.format_exc()}")
-
+    
 def stockBody():
     try: 
         # Find Exterior Body 
@@ -412,7 +410,7 @@ def idBump():
     try:
         global eastBump, westBump
         eastBump = False
-        westBump = False  
+        westBump = False
 
         bump_track_dim = in_cm(6.086)
         tolerance = in_cm(.001)  
@@ -607,7 +605,7 @@ def bumpEast():             # This function cuts the "Stock" and "Foam" bodies t
         sketch = sketches.add(xzPlane)
 
         # Offset from bump
-        x_offset = 31 #inches
+        x_offset = 32 #inches
         x_offset = (x_offset * 2.54 * -1) # convert to CM and change to be negative
 
         # Draw rectangle in sketch plane coordinates (X = horizontal, Y = vertical)
@@ -680,7 +678,7 @@ def bumpWest():             # This function cuts the "Stock" and "Foam" bodies t
         min_x = bb.minPoint.x
 
         # Offset from bump
-        x_offset = 31 #inches
+        x_offset = 32 #inches
         x_offset = (x_offset * 2.54 * -1) # convert to CM and change to be negative
 
         # Draw rectangle in sketch plane coordinates (X = horizontal, Y = vertical)
@@ -730,19 +728,22 @@ def bumpWest():             # This function cuts the "Stock" and "Foam" bodies t
     except:
         ui.messageBox(f"bumpWest(): failed:\n{traceback.format_exc()}")
 
-def openBIM():
-    try:    
-        script_path = r"C:\Users\ahughes\Documents\Python BIM\pyBIM.pyw"
-        if os.path.exists(script_path):
-            current_doc_name = app.activeDocument.name
-            panel_number = re.sub(r'\s*[vV]\d+', '', current_doc_name) 
-            system_python = r"C:/Users/ahughes/AppData/Local/Programs/Python/Python313/pythonw.exe"
-            subprocess.Popen([system_python, os.path.realpath(script_path), panel_number])
-            time.sleep(1)
-        else:
-            webbrowser.open_new_tab("https://bim360field.autodesk.com/equipment") 
+def openPDF():
+    try:
+        # Normalize inputs for case-insensitive searching
+        current_doc_name = app.activeDocument.name
+        panel_number = re.sub(r'\s*[vV]\d+', '', current_doc_name) 
+        
+        directory_path = r"C:\Users\ahughes\Dropbox\UPLOADED TO BIM360"
+        # os.walk is efficient for traversing directory trees
+        for root, _, files in os.walk(directory_path):
+            for filename in files:
+                # Check if the file is a PDF and contains the part number
+                if filename.lower().endswith('.pdf') and panel_number in filename.lower():
+                    full_path = os.path.join(root, filename)
+                    os.startfile(full_path)
     except:
-        ui.messageBox(f"openBIM(): failed:\n{traceback.format_exc()}")
+        ui.messageBox(f"{traceback.format_exc()}", "openPDF(): failed!")
 
 def idOrigin():
     try:
@@ -794,27 +795,30 @@ def idOrigin():
         ui.messageBox(f"{traceback.format_exc()}", "identifyOrigin(): failed!")
 
 def idReturn():
-    global is_return_result, west_return 
-    is_return_result = adsk.core.DialogResults.DialogNo
-    west_return = False
-
+    global east_return_result, west_return_result
+    east_return_result = adsk.core.DialogResults.DialogNo
+    west_return_result = adsk.core.DialogResults.DialogNo
+ 
     # The script can only idenify a return if there are "Stud" bodies in the model.
     # Here we confirm if there are "Stud" bodies. If a Stud is not found, the script ask the user to refer to the panel drawing and select Yes or No.
     try:
         studs = [body for body in rootComp.bRepBodies if body.name.startswith("Stud")]
         if not studs:
             # Ask User if the panel has a return
-            question_text = """Frame bodies could not be found. Check the drawing for a return on the right hand side of the panel.\n 
+            question_text = """Frame bodies were not detected. Check the drawing for a return on the right hand side of the panel.\n 
         \u2022 'No' will place the coordinate system at 0.0625\" from the Exterior body.\n
         \u2022 'Yes' will place the coordinate system at 4.6875\" from the Exterior body.""" 
             button_type = adsk.core.MessageBoxButtonTypes.YesNoButtonType
             warning_icon = adsk.core.MessageBoxIconTypes.WarningIconType
-            is_return_result = ui.messageBox(question_text, "Warning", button_type, warning_icon)
-            addMessage("Frame bodies could not be found.")
+            east_return_result = ui.messageBox(question_text, "Warning", button_type, warning_icon)
+            west_return_result = ui.messageBox("Is there a west return? (Left side of the panel)", "Warning", button_type, warning_icon)
+            addMessage("Frame bodies were not detected.")
+
+
             return None, None
 
         if abs(stud_max_point.x / 2.54) > 4:
-            is_return_result = adsk.core.DialogResults.DialogYes
+            east_return_result = adsk.core.DialogResults.DialogYes
         
         # This section is for identifying a west return.
         min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
@@ -829,7 +833,7 @@ def idReturn():
         exterior_min_point = adsk.core.Point3D.create(min_x, min_y, min_z)
 
         if (abs(exterior_min_point.x / 2.54) - abs(stud_min_point.x / 2.54)) > 4:
-            west_return = True
+            west_return_result = adsk.core.DialogResults.DialogYes
     
     except:
         ui.messageBox(f"{traceback.format_exc()}", "isReturn(): failed!")
@@ -861,7 +865,7 @@ def melvinOrgin():
         offset_z = corner_z - in_cm(0.0625)
 
         # This tries to set the WCS X axis to location ideneified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
-        if is_return_result == adsk.core.DialogResults.DialogYes:
+        if east_return_result == adsk.core.DialogResults.DialogYes:
             if any("Stud" in body.name for body in rootComp.bRepBodies):
                 offset_x = corner_x - (abs(stud_max_point.x))
                 if (abs(max_x)) - (abs(stud_max_point.x)) != in_cm(0.0625) or in_cm (4.6875): #Probably need sheathing width as well.
@@ -870,7 +874,7 @@ def melvinOrgin():
                 offset_x = corner_x - in_cm(4.6875)
 
         # This tries to set the WCS Y axis to location ideneified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
-        if is_return_result == adsk.core.DialogResults.DialogYes:
+        if east_return_result == adsk.core.DialogResults.DialogYes:
             if any("Track" in body.name for body in rootComp.bRepBodies):
                 offset_x = corner_x - (abs(track_max_point.z))
                 if (abs(max_z)) - (abs(track_max_point.z)) != in_cm(0.0625):
@@ -891,6 +895,7 @@ def melvinOrgin():
         new_point.name = 'Melvin WCS'
         app.activeViewport.fit()
 
+        ############ Define Melvin 'Flipped' WCS ############
         # Back-bottom-left corner
         bl_corner_x, bl_corner_y, bl_corner_z = min_x, max_y, min_z
 
@@ -908,6 +913,24 @@ def melvinOrgin():
 
         # Define WCS Z axis position
         bl_offset_y = bl_corner_y - in_cm(6.0)
+
+        # This tries to set the WCS X axis to location ideneified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
+        if west_return_result == adsk.core.DialogResults.DialogYes:
+            if any("Stud" in body.name for body in rootComp.bRepBodies):
+                bl_offset_x = stud_min_point.x
+                if (abs(min_x)) - (abs(stud_min_point.x)) != in_cm(0.0625) or in_cm (4.6875): #Probably need sheathing width as well.
+                    addMessage("There may be an issue with the Melvin 'Flipped' WCS X axis")
+            else:
+                bl_offset_x = bl_corner_x + in_cm(4.6875)
+
+        # This tries to set the WCS Y axis to location ideneified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
+        if west_return_result == adsk.core.DialogResults.DialogYes:
+            if any("Track" in body.name for body in rootComp.bRepBodies):
+                bl_offset_x = bl_corner_x - (abs(track_min_point.z))
+                if (abs(max_z)) - (abs(track_max_point.z)) != in_cm(0.0625):
+                    addMessage("There may be an issue with the Melvin 'Flipped' WCS Y axis")
+            else:
+                offset_z = corner_z - in_cm(0.0625)
 
         # Create point
         construction_point = adsk.core.Point3D.create(bl_offset_x, bl_offset_y, bl_offset_z)
@@ -944,7 +967,7 @@ def charlesOrgin():
         offset_y = corner_y
         offset_z = corner_z - in_cm(0.0625)
 
-        if is_return_result == adsk.core.DialogResults.DialogYes:
+        if east_return_result == adsk.core.DialogResults.DialogYes:
             if any("Stud" in body.name for body in rootComp.bRepBodies):
                 offset_x = corner_x - (abs(stud_max_point.x))
                 offset = abs(((abs(max_x)) - (abs(stud_max_point.x)))) / 2.54
@@ -1101,7 +1124,7 @@ def idBrickDetail():
         target_y = max_y + offset
         for face in exterior_body.faces:
             face_y = face.centroid.y
-            if abs(face_y - target_y) <= 1e-6:  # tiny tolerance for float comparison
+            if abs(face_y - target_y) <= .002:  # tiny tolerance for float comparison
                 faces_at_offset.append(face)
 
         if len(faces_at_offset) > 0:
@@ -1132,7 +1155,7 @@ def idEastReturnBrickDetail():
         target_x = max_x - offset
         for face in exterior_body.faces:
             face_x = face.centroid.x
-            if abs(face_x - target_x) <= 1e-6:  # tiny tolerance for float comparison
+            if abs(face_x - target_x) <= .002:  # tiny tolerance for float comparison
                 faces_at_offset.append(face)
 
         if len(faces_at_offset) > 0:
@@ -1163,7 +1186,7 @@ def idWestReturnBrickDetail():
         target_x = min_x + offset
         for face in exterior_body.faces:
             face_x = face.centroid.x
-            if abs(face_x - target_x) <= 1e-6:  # tiny tolerance for float comparison
+            if abs(face_x - target_x) <= .002:  # tiny tolerance for float comparison
                 faces_at_offset.append(face)
 
         if len(faces_at_offset) > 0:
@@ -1178,7 +1201,13 @@ def idWestReturnBrickDetail():
 def melvinSetup():
     try:
         if not any("Sheathing" in body.name for body in rootComp.bRepBodies):
-            addMessage("\"Sheathing\" body could not be found: The Melvin setup will not be created.")
+            # Show Exterior Body for Charles setup.
+            for body in rootComp.bRepBodies:
+                if body.name == "Exterior":
+                    body.isVisible = True
+            # Alert user.
+            addMessage("\"Sheathing\" body was not detected.")
+            addMessage("\"The Melvin setup was not created.")
             return
         else:
             # Create the setup.
@@ -1196,7 +1225,7 @@ def melvinSetup():
 
             # Set the comment for the program.
             commentParam = setupInput.parameters.itemByName('job_programComment')
-            commentParam.value.value = 'Created from script version 1.0'
+            commentParam.value.value = 'Created from PanelStartUp.py script version 1.0'
             
             # Find and assign the machine from the Local Library
             machine_model_to_find = "Melvin"
@@ -1408,50 +1437,45 @@ def charlesSetup():
             setup.parameters.itemByName('wcs_orientation_axisZ').value.value = [z_axis_entity]
             
             template_names_to_load = []
-            # Load templates from cloud for Charles
+            # Load templates from cloud for Charles by tool number
             template_names_to_load.extend([
                     "Charles Facinghead",
-                    "Charles Perimeter",
-                    "Charles Perimeter Above Sheathing"
+                    "Charles Perimeter",                                    # Tool 1
+                    "Charles Perimeter Above Sheathing"                     # Tool 1
             ])
 
             if windows == True:
-                template_names_to_load.append("Charles Window Bevel")
+                template_names_to_load.append("Charles Window Bevel")       # Tool 1
 
-            # if any("Bump" in body.name for body in rootComp.bRepBodies):
-            if eastBump == True:
-                template_names_to_load.append("Charles Bump Clean Up FM")
+            if east_return_result == adsk.core.DialogResults.DialogYes:
+                # Load templates from cloud for Charles
+                template_names_to_load.extend(["Charles Return EM"])        # Tool 1
+            
+            if west_return_result == adsk.core.DialogResults.DialogYes:
+                template_names_to_load.extend(["Charles Return EM" ])       # Tool 1
 
             if idBrickDetail():
                 template_names_to_load.extend([
-                        "Charles Brick Feature EM",
-                        "Charles Brick Feature FM"
-                    ])
-        
-            if is_return_result == adsk.core.DialogResults.DialogYes:
-                # Load templates from cloud for Charles
-                template_names_to_load.extend([
-                        "Charles Return EM",
-                        "Charles Return FM"
+                        "Charles Brick Feature EM",                         # Tool 2
+                        "Charles Brick Feature FM"                          # Tool 3
                     ])
                 
-            if west_return == True:
-                template_names_to_load.extend([
-                        "Charles Return EM",
-                        "Charles Return FM"
-                    ])
+            # if any("Bump" in body.name for body in rootComp.bRepBodies):
+            if eastBump == True:
+                template_names_to_load.append("Charles Bump Clean Up FM")   # Tool 3   
+
+            if east_return_result == adsk.core.DialogResults.DialogYes:
+                # Load templates from cloud for Charles
+                template_names_to_load.extend(["Charles Return FM"])        # Tool 3
+                
+            if west_return_result == adsk.core.DialogResults.DialogYes:
+                template_names_to_load.extend(["Charles Return FM"])        # Tool 3
                 
             if idWestReturnBrickDetail():
-                template_names_to_load.extend([
-                        "Charles Return Brick FM"
-                    ])
+                template_names_to_load.extend(["Charles Return Brick FM"])  # Tool 3
         
-                
             if idEastReturnBrickDetail():
-                template_names_to_load.extend([
-                        "Charles Return Brick FM"
-                    ])
-        
+                template_names_to_load.extend(["Charles Return Brick FM"])  # Tool 3
         
             camManager = adsk.cam.CAMManager.get()
             libraryManager = camManager.libraryManager
@@ -1465,20 +1489,31 @@ def charlesSetup():
                 found_template = [item for item in cloud_templates if item.name == template_name][0] 
                 setup.createFromCAMTemplate(found_template)
 
-            if idWestReturnBrickDetail():
-                eastReturnBrick = setup.operations.itemByName('Charles Return Brick FM')
-                eastReturnBrick.parameters.itemByName('bottomHeight_offset').expression = '-3.4 in'
-                eastReturnBrick.parameters.itemByName('topHeight_offset').expression = '-3.4 in'
-                eastReturnBrick.parameters.itemByName('feedHeight_offset').expression = '-3.4 in'
-                eastReturnBrick.parameters.itemByName('retractHeight_offset').expression = '-3.4 in'
-            
-                
+            if east_return_result == adsk.core.DialogResults.DialogYes:
+                changeEastReturnEM = setup.operations.itemByName('Return EM')
+                changeEastReturnEM.parameters.itemByName("view_orientation_axisZ").value.value = [rootComp.yZConstructionPlane]
+
+            if west_return_result == adsk.core.DialogResults.DialogYes:
+                changeWestReturnEM = setup.operations.itemByName('Return EM')
+                changeWestReturnEM.parameters.itemByName("view_orientation_axisZ").value.value = [rootComp.yZConstructionPlane]
+                changeWestReturnEM.parameters.itemByName("view_orientation_flipZ").value.value = True
+                            
             if idEastReturnBrickDetail():
-                westReturnBrick = setup.operations.itemByName('Charles Return Brick FM')
-                westReturnBrick.parameters.itemByName('bottomHeight_offset').expression = '-3.4 in'
-                westReturnBrick.parameters.itemByName('topHeight_offset').expression = '-3.4 in'
-                westReturnBrick.parameters.itemByName('feedHeight_offset').expression = '-3.4 in'
-                westReturnBrick.parameters.itemByName('retractHeight_offset').expression = '-3.4 in'
+                changeEastReturnFM = setup.operations.itemByName('Return FM')
+                changeEastReturnFM.parameters.itemByName("view_orientation_axisZ").value.value = [rootComp.yZConstructionPlane]
+
+                eastReturnBrick = setup.operations.itemByName('Return Brick FM')
+                eastReturnBrick.parameters.itemByName('view_orientation_axisZ').value.value = [rootComp.yZConstructionPlane]
+
+            if idWestReturnBrickDetail():
+                changeWestReturnFM = setup.operations.itemByName('Return FM')
+                changeWestReturnFM.parameters.itemByName("view_orientation_axisZ").value.value = [rootComp.yZConstructionPlane]
+                changeWestReturnFM.parameters.itemByName("view_orientation_flipZ").value.value = True
+
+                westReturnBrick = setup.operations.itemByName('Return Brick FM')
+                westReturnBrick.parameters.itemByName('view_orientation_axisZ').value.value = [rootComp.yZConstructionPlane]
+                westReturnBrick.parameters.itemByName("view_orientation_flipZ").value.value = True
+
         else:
             addMessage("'Foam' body was not detected. The Charles setup will not be created.")
 
@@ -1590,6 +1625,7 @@ def errorDetection():
                 min_x_result = (min_x_result / 2.54)
                 addMessage(f"Difference between 'Sheating' and 'Frame' detected. \n \u2022 X min: {min_x_result:.3f}in")
 
+        
         if any("Foam" in body.name for body in rootComp.bRepBodies):
             # foam = [body for body in rootComp.bRepBodies if body.name.startswith("Foam")]
             for body in rootComp.bRepBodies:
