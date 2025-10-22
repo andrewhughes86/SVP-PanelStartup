@@ -3,9 +3,9 @@
 # TODO: Create script to automate cutting the "L" shape notches in the back of the sheathing.
 # TODO: Need to understand when bumps are framed at Melvin vs after. Then change bumpEast() and bumpWest() cut the new copy of sheathing.
 # TODO: May need to add an easily to change variable for return diminesion in case it changes from project to project.
-# TODO: Add logic to find non standard bumps. See 8&L Panel 10014.
-# TODO: Test return brick detail functions. EAST is good. 
+# TODO: Add logic for identifying bumps and catch all. See 8&L Panel 10014.
 # TODO: Change name of idFrame
+# TODO: errorDetection() function is not working correctly.
 
 import adsk.core, adsk.fusion, math, re, subprocess, os, sys, time, webbrowser, traceback
 
@@ -864,21 +864,30 @@ def melvinOrgin():
         offset_y = corner_y - in_cm(6.0)
         offset_z = corner_z - in_cm(0.0625)
 
+        if any("Stud" in body.name for body in rootComp.bRepBodies):
+            offset_x = stud_max_point.x
+
+        if any("Track" in body.name for body in rootComp.bRepBodies):
+            offset_z = track_max_point.z
+
         # This tries to set the WCS X axis to location ideneified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
         if east_return_result == adsk.core.DialogResults.DialogYes:
             if any("Stud" in body.name for body in rootComp.bRepBodies):
-                offset_x = corner_x - (abs(stud_max_point.x))
-                if (abs(max_x)) - (abs(stud_max_point.x)) != in_cm(0.0625) or in_cm (4.6875): #Probably need sheathing width as well.
-                    addMessage("There may be an issue with the Melvin WCS X axis")
+                offset_x = stud_max_point.x
+                difference = abs((abs(max_x)) - (abs(stud_max_point.x)) / 2.54)
+                if not abs(difference - 0.063) >= .002 or abs(difference - 4.625 >= .002): #Probably need sheathing width as well.
+                    addMessage(f"There may be an issue with the Melvin WCS X axis. \n    \u2022 Difference between 'Stud' and 'Exterior' bodies: {difference:.3f}in")
             else:
                 offset_x = corner_x - in_cm(4.6875)
 
         # This tries to set the WCS Y axis to location ideneified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
         if east_return_result == adsk.core.DialogResults.DialogYes:
             if any("Track" in body.name for body in rootComp.bRepBodies):
-                offset_x = corner_x - (abs(track_max_point.z))
-                if (abs(max_z)) - (abs(track_max_point.z)) != in_cm(0.0625):
-                    addMessage("There may be an issue with the Melvin WCS Y axis")
+                offset_z = track_max_point.z
+                difference = abs((abs(max_z)) - (abs(track_max_point.z)) / 2.54)
+                if abs(difference - 0.063) > .002:
+                    addMessage(f"There may be an issue with the Melvin WCS Y axis. \n    \u2022 Difference between 'Track' and 'Exterior' bodies: {difference:.3f}in")
+           
             else:
                 offset_z = corner_z - in_cm(0.0625)
 
@@ -967,19 +976,25 @@ def charlesOrgin():
         offset_y = corner_y
         offset_z = corner_z - in_cm(0.0625)
 
-        if east_return_result == adsk.core.DialogResults.DialogYes:
-            if any("Stud" in body.name for body in rootComp.bRepBodies):
-                offset_x = corner_x - (abs(stud_max_point.x))
-                offset = abs(((abs(max_x)) - (abs(stud_max_point.x)))) / 2.54
-                if offset - 0.0625 > .01 or offset - 4.6875 > .01: #Probably need to add sheathing width as well.S
-                    addMessage(f"There may be an issue with the Charles WCS X axis position. \n     \u2022{offset:.3f} offset was detected.")
-            else:
-                offset_x = corner_x - in_cm(4.6875)
+        if any("Stud" in body.name for body in rootComp.bRepBodies):
+            offset_x = stud_max_point.x
 
         if any("Track" in body.name for body in rootComp.bRepBodies):
-                offset_x = corner_x - (abs(track_max_point.z))
+            offset_z = track_max_point.z
+
+        if east_return_result == adsk.core.DialogResults.DialogYes:
+            if any("Stud" in body.name for body in rootComp.bRepBodies):
+                offset_x = stud_max_point.x
+                offset = abs(((abs(max_x)) - (abs(stud_max_point.x)))) / 2.54
+                if not (offset - 0.0625) > .01 or (offset - 4.625) > .01: #Probably need to add sheathing width as well.S
+                    addMessage(f"There may be an issue with the Charles WCS X axis position. \n     \u2022{offset:.3f} offset was detected.")  
+            else:
+                offset_x = corner_x - in_cm(4.625)
+
+        if any("Track" in body.name for body in rootComp.bRepBodies):
+                offset_z = track_max_point.z
                 offset = abs(((abs(max_z)) - (abs(track_max_point.z)))) / 2.54
-                if offset - 0.0625 > .01 or offset - 4.6875 > .01: #Probably need to add sheathing width as well.
+                if (offset - 0.0625) > .01 or (offset - 4.625) > .01: #Probably need to add sheathing width as well.
                     addMessage(f"There may be an issue with the Charles WCS Y axis position. \n     \u2022{offset:.3f} offset was detected.")
        
         construction_point = adsk.core.Point3D.create(offset_x, offset_y, offset_z)
@@ -1625,7 +1640,6 @@ def errorDetection():
                 min_x_result = (min_x_result / 2.54)
                 addMessage(f"Difference between 'Sheating' and 'Frame' detected. \n \u2022 X min: {min_x_result:.3f}in")
 
-        
         if any("Foam" in body.name for body in rootComp.bRepBodies):
             # foam = [body for body in rootComp.bRepBodies if body.name.startswith("Foam")]
             for body in rootComp.bRepBodies:
@@ -1636,25 +1650,25 @@ def errorDetection():
             foam = foamBody.boundingBox
 
             # Compare "Sheathing" and "Foam" max and min values.
-            foam_max_z_result = abs(abs(sheathing_max_point.z) - abs(foam.maxPoint.z))
-            if foam_max_z_result > .002:
-                foam_max_z_result = (foam_max_z_result / 2.54)
-                addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 Z max: {foam_max_z_result:.3f}in")
-
             foam_min_z_result = abs(abs(sheathing_min_point.z) - abs(foam.minPoint.z))
             if foam_min_z_result > .002: 
                 foam_min_z_result = (foam_min_z_result / 2.54)
                 addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 Z min: {foam_min_z_result:.3f}in")
 
+            foam_max_z_result = abs(abs(sheathing_max_point.z) - abs(foam.maxPoint.z))
+            if foam_max_z_result > .002:
+                foam_max_z_result = (foam_max_z_result / 2.54)
+                addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 Z max: {foam_max_z_result:.3f}in")
+
+            foam_min_x_result = (abs(abs(sheathing_min_point.x)) - (abs(foam.minPoint.x)))
+            if foam_min_x_result > .002: 
+                foam_min_x_result = (foam_min_x_result / 2.54)
+                addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 X min: {foam_min_x_result:.3f}in")
+                
             foam_max_x_result = abs(abs(sheathing_max_point.x) - abs(foam.maxPoint.x))
             if foam_max_x_result > .002: 
                 foam_max_x_result = (foam_max_x_result / 2.54)
                 addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 X max: {foam_max_x_result:.3f}in")
-
-            foam_min_x_result = abs(abs(sheathing_min_point.x) - abs(foam.minPoint.x))
-            if foam_min_x_result > .002: 
-                foam_min_x_result = (min_x_result / 2.54)
-                addMessage(f"Difference between 'Sheating' and 'Foam' detected. \n \u2022 X min: {foam_min_x_result:.3f}in")
             
     except:
         ui.messageBox(f"ErrorDection(): failed:\n{traceback.format_exc()}")
