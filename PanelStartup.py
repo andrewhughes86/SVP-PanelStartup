@@ -2,10 +2,7 @@
 
 # TODO: Create script to automate cutting the "L" shape notches in the back of the sheathing.
 # TODO: Need to understand when bumps are framed at Melvin vs after. Then change bumpEast() and bumpWest() cut the new copy of sheathing.
-# TODO: May need to add an easily to change variable for return diminesion in case it changes from project to project.
 # TODO: Add logic for identifying bumps and catch all. See 8&L Panel 10014.
-# TODO: Change name of idFrame
-# TODO: errorDetection() function is not working correctly.
 
 import adsk.core, adsk.fusion, math, re, subprocess, os, sys, time, webbrowser, traceback
 
@@ -29,10 +26,12 @@ def run(context):
     openPDF()               # Opens the PDF drawing for the panel.
     stockBody()             # Create a stock body for Charles setup.
     changeUnits()           # Change units to inches.
-    idFoam()                # Identify and rename foam bodies.
-    idFrame()               # Identify and rename frame bodies.
     idStuds()               # Identify and rename stud bodies.
     idTrack()               # Identify and rename track bodies.
+    idCRC()                 # Identify and rename CRC bodies.
+    idFoam()                # Identify and rename foam bodies.
+    idSheathing()           # Identify and rename sheathing bodies.
+    mergeSheathing()        # Merge all sheathing panels into one.
     idRotatedBump()         # Identify and rename bump bodies that are on an angle.
     idBump()                # Identify and rename bump bodies.
     idWindows()             # Identifies windows and determines if the window bevel toolpath is needed.
@@ -40,11 +39,13 @@ def run(context):
     idReturn()              # Is there a return on the right side of the panel that would interfer with WCS?
     melvinOrgin()           # Creates a sketch and contruction point for the Melvin WCS.
     charlesOrgin()          # Creates a sketch and contruction point for the Charles WCS.
-    mergeSheathing()        # Merge all sheathing panels into one.
     camWorkspace()          # Create the cam workspace.
     melvinSetup()           # Create the Melvin setup.
     charlesSetup()          # Create the Charles setup.
     idThinFoam()            # Checks for thin foam and adjusts the adjust toolpath as necessary.
+    showBodies()            # Makes bodies visible and ready for geometry selection.
+    facingheadGeometry()   # Selects the top face(s) for the facing operation and generates the toolpath.
+    brickFeatureGeometry() # Still testing.
     errorDetection()        # Compares 'Frame' and 'Sheathing' and 'Foam' and 'Sheathing' to detect errors from Revit export.
     scriptSummary()         # Displays a summary at the end of the script.
 
@@ -257,7 +258,7 @@ def idFoam():
     except:
         ui.messageBox(f"identifyFoam(): failed:\n{traceback.format_exc()}")
 
-def idFrame():
+def idCRC():
     tolerance = in_cm(.001)   
     try:
         # Bump stud 6" X 2.5"
@@ -276,9 +277,9 @@ def idFrame():
                 abs(width - frame_stud_w_dim) < tolerance):
                 # Add the body to the list and rename it
                 frame_stud_bodies.append(body)
-                body.name = "Frame"
+                body.name = "CRC"
     except:
-        ui.messageBox(f"identifyFrame(): failed:\n{traceback.format_exc()}")
+        ui.messageBox(f"idCRC(): failed:\n{traceback.format_exc()}")
 
 def idStuds():
     try:
@@ -315,6 +316,216 @@ def idTrack():
                 body.name = "Track"
     except:
         ui.messageBox(f"identifyTrack(): failed:\n{traceback.format_exc()}")
+
+def idSheathing():
+    try:
+        sheathing_thickness = in_cm(0.625)
+        tolerance = in_cm(0.001)
+
+        # --- Step 1: Rename all bodies as "Sheathing" ---
+        for body in rootComp.bRepBodies:
+            boundingBox = body.boundingBox
+            width = boundingBox.maxPoint.y - boundingBox.minPoint.y
+            if abs(width - sheathing_thickness) < tolerance:
+                body.name = "SheathingPanel"
+                body.isVisible = False
+    except:
+        ui.messageBox(f"idSheathing(): failed:\n{traceback.format_exc()}")
+
+def mergeSheathing():
+    try:
+        # Make copies and rename them "SheathingCopy"
+        copy_bodies = []
+        for body in rootComp.bRepBodies:
+            if body.name.startswith("SheathingPanel"):
+                body_copy = body.copyToComponent(rootComp)
+                body_copy.name = "SheathingCopy"
+                copy_bodies.append(body_copy)
+
+        # Keep merging until only one "Sheathing" body remains
+        for _ in range(2):  # Run up to twice
+            bodies_to_merge = []
+
+            for body in rootComp.bRepBodies:
+                if body.name.startswith("SheathingCopy"):
+                    bodies_to_merge.append(body)
+
+            if len(bodies_to_merge) <= 1:
+                break  # Done merging
+
+            combineFeatures = rootComp.features.combineFeatures
+            targetBody = bodies_to_merge[0]
+            for toolBody in bodies_to_merge[1:]:
+                toolBodies = adsk.core.ObjectCollection.create()
+                toolBodies.add(toolBody)
+                combineInput = combineFeatures.createInput(targetBody, toolBodies)
+                combineInput.operation = adsk.fusion.FeatureOperations.JoinFeatureOperation
+                combineFeature = combineFeatures.add(combineInput)
+                targetBody = combineFeature.bodies.item(0)
+                targetBody.name = "Sheathing"
+
+    except:
+        ui.messageBox(f"mergeSheathing(): failed:\n{traceback.format_exc()}")
+
+def modSheathing():
+    try:
+        # TODO: Change to auto select the bottom face of sheathing.
+        # TODO: Add extrude cut at the end.
+
+        # Prompt the user to select a face
+        ui.messageBox('Please select a face on which to create the sketch and draw L-shaped features.', 'Select Face')
+        # Create a selection filter for faces
+        selection = ui.selectEntity('Select a face', 'Faces')
+        if not selection:
+            ui.messageBox('No face selected. Script cancelled.', 'Cancelled')
+            return
+        selected_face = adsk.fusion.BRepFace.cast(selection.entity)
+        
+        # Get the parent component of the selected face
+        parent_component = selected_face.body.parentComponent
+
+        # Create a new sketch on the selected face
+        sketches = parent_component.sketches
+        sketch = sketches.add(selected_face)
+        sketch.name = "Corner L-Features Sketch" # Renamed sketch for clarity
+
+        # Define the dimensions of the L-shape in cm
+        long_leg_cm = 3 * 2.54   # 3 inches converted to centimeters
+        thickness_cm = 1 * 2.54 # 1 inch converted to centimeters
+
+        # Collect all unique vertices from the edges of the selected face
+        # Using a dictionary to store unique vertices: {str(point_coords): adsk.fusion.BRepVertex}
+        unique_vertices = {} 
+        
+        # Also, calculate the bounding box of the face in sketch coordinates
+        # This is needed to determine the relative position of each corner (e.g., min-X, max-Y corner)
+        min_sketch_x = float('inf')
+        max_sketch_x = float('-inf')
+        min_sketch_y = float('inf')
+        max_sketch_y = float('-inf')
+
+        for loop in selected_face.loops:
+            for edge in loop.edges:
+                # Get the start and end vertices of the edge
+                start_vertex = edge.startVertex
+                end_vertex = edge.endVertex
+
+                # Process start vertex
+                if start_vertex:
+                    # Store unique vertices based on their global coordinates
+                    # Using a string representation of coordinates for dictionary key
+                    if str(start_vertex.geometry.asArray()) not in unique_vertices:
+                        unique_vertices[str(start_vertex.geometry.asArray())] = start_vertex
+                    
+                    # Transform to sketch space to update bounding box
+                    sp = sketch.modelToSketchSpace(start_vertex.geometry)
+                    min_sketch_x = min(min_sketch_x, sp.x)
+                    max_sketch_x = max(max_sketch_x, sp.x)
+                    min_sketch_y = min(min_sketch_y, sp.y)
+                    max_sketch_y = max(max_sketch_y, sp.y)
+
+                # Process end vertex
+                if end_vertex:
+                    # Store unique vertices
+                    if str(end_vertex.geometry.asArray()) not in unique_vertices:
+                        unique_vertices[str(end_vertex.geometry.asArray())] = end_vertex
+                    
+                    # Transform to sketch space to update bounding box
+                    sp = sketch.modelToSketchSpace(end_vertex.geometry)
+                    min_sketch_x = min(min_sketch_x, sp.x)
+                    max_sketch_x = max(max_sketch_x, sp.x)
+                    min_sketch_y = min(min_sketch_y, sp.y)
+                    max_sketch_y = max(max_sketch_y, sp.y)
+
+        if not unique_vertices:
+            ui.messageBox('No corners (vertices) found on the selected face.', 'No Corners')
+            return
+
+        # Add a small tolerance for floating point comparisons when checking corner positions
+        tolerance = 0.0001 
+
+        # Draw an L-shaped feature at each unique vertex
+        features_drawn_count = 0
+        for vertex_key, vertex in unique_vertices.items():
+            global_point = vertex.geometry
+            sketch_point = sketch.modelToSketchSpace(global_point)
+
+            # Define the points for the L-shape
+            l_points = []
+
+            # Determine corner type based on its position relative to the sketch bounding box
+            # This helps orient the L-shape inward
+            is_min_x = abs(sketch_point.x - min_sketch_x) < tolerance
+            is_max_x = abs(sketch_point.x - max_sketch_x) < tolerance
+            is_min_y = abs(sketch_point.y - min_sketch_y) < tolerance
+            is_max_y = abs(sketch_point.y - max_sketch_y) < tolerance
+
+            # Define the L-shape points based on the corner type
+            if is_min_x and is_min_y: # Bottom-Left corner of the face's bounding box
+                # L-shape goes up and right from the corner
+                l_points = [
+                    adsk.core.Point3D.create(sketch_point.x, sketch_point.y, 0),
+                    adsk.core.Point3D.create(sketch_point.x + long_leg_cm, sketch_point.y, 0),
+                    adsk.core.Point3D.create(sketch_point.x + long_leg_cm, sketch_point.y + thickness_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x + thickness_cm, sketch_point.y + thickness_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x + thickness_cm, sketch_point.y + long_leg_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x, sketch_point.y + long_leg_cm, 0)
+                ]
+            elif is_max_x and is_min_y: # Bottom-Right corner of the face's bounding box
+                # L-shape goes up and left from the corner
+                l_points = [
+                    adsk.core.Point3D.create(sketch_point.x, sketch_point.y, 0),
+                    adsk.core.Point3D.create(sketch_point.x - long_leg_cm, sketch_point.y, 0),
+                    adsk.core.Point3D.create(sketch_point.x - long_leg_cm, sketch_point.y + thickness_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x - thickness_cm, sketch_point.y + thickness_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x - thickness_cm, sketch_point.y + long_leg_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x, sketch_point.y + long_leg_cm, 0)
+                ]
+            elif is_min_x and is_max_y: # Top-Left corner of the face's bounding box
+                # L-shape goes down and right from the corner
+                l_points = [
+                    adsk.core.Point3D.create(sketch_point.x, sketch_point.y, 0),
+                    adsk.core.Point3D.create(sketch_point.x + long_leg_cm, sketch_point.y, 0),
+                    adsk.core.Point3D.create(sketch_point.x + long_leg_cm, sketch_point.y - thickness_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x + thickness_cm, sketch_point.y - thickness_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x + thickness_cm, sketch_point.y - long_leg_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x, sketch_point.y - long_leg_cm, 0)
+                ]
+            elif is_max_x and is_max_y: # Top-Right corner of the face's bounding box
+                # L-shape goes down and left from the corner
+                l_points = [
+                    adsk.core.Point3D.create(sketch_point.x, sketch_point.y, 0),
+                    adsk.core.Point3D.create(sketch_point.x - long_leg_cm, sketch_point.y, 0),
+                    adsk.core.Point3D.create(sketch_point.x - long_leg_cm, sketch_point.y - thickness_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x - thickness_cm, sketch_point.y - thickness_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x - thickness_cm, sketch_point.y - long_leg_cm, 0),
+                    adsk.core.Point3D.create(sketch_point.x, sketch_point.y - long_leg_cm, 0)
+                ]
+    
+            # Draw the L-shape using connected lines
+            if l_points:
+                sketch_lines_collection = sketch.sketchCurves.sketchLines
+                
+                # Debugging: Check if the collection is valid and its type
+                if sketch_lines_collection is None:
+                    ui.messageBox("Error: sketch.sketchCurves.sketchLines returned None. Cannot draw lines.", "Debug Info - Null Collection")
+                    return # Exit if the collection is null
+                
+                # Debugging: Check if the 'addTwoPointLine' attribute exists on the collection
+                if not hasattr(sketch_lines_collection, 'addByTwoPoints'):
+                    ui.messageBox(f"Error: Object of type {type(sketch_lines_collection)} does not have 'addTwoPointLine' attribute. Cannot draw lines.", "Debug Info - Missing Attribute")
+                    return # Exit if the method is missing
+                
+                for i in range(len(l_points)):
+                    start_p = l_points[i]
+                    end_p = l_points[(i + 1) % len(l_points)] # Connect last point back to first
+                    sketch_lines_collection.addByTwoPoints(start_p, end_p)
+                features_drawn_count += 1
+
+        ui.messageBox(f'Successfully created "Corner L-Features Sketch" on the selected face and drew {features_drawn_count} L-shaped features on primary corners.', 'Script Complete')
+
+    except:
+        ui.messageBox('modSheathing Failed:\n{}'.format(traceback.format_exc()))
 
 def idRotatedBump():        # This function works but is sloppy and needs to be cleaned up.
     global eastBump, westBump
@@ -479,7 +690,7 @@ def idBump():
                     bumpWest()
 
     except:
-        ui.messageBox(f"identifyBump(): failed:\n{traceback.format_exc()}")
+        ui.messageBox(f"idBump(): failed:\n{traceback.format_exc()}")
 
 def idWindows():            # This function tries to detect if the panel has windows. Goal is to determine to add the window bevel toolpath or not.
     
@@ -1012,86 +1223,6 @@ def charlesOrgin():
     except:
         ui.messageBox(f"charlesOrgin(): failed:\n{traceback.format_exc()}")
 
-def mergeSheathingOld():
-    try:
-        sheathing_thickness = in_cm(0.625)
-        tolerance = in_cm(0.001)
-
-        # Keep merging until only one "Sheathing" body remains
-        for _ in range(2):  # Run up to twice
-            bodies_to_merge = []
-
-            for body in rootComp.bRepBodies:
-                boundingBox = body.boundingBox
-                width = boundingBox.maxPoint.y - boundingBox.minPoint.y
-                if abs(width - sheathing_thickness) < tolerance:
-                    bodies_to_merge.append(body)
-
-            if len(bodies_to_merge) <= 1:
-                break  # Done merging
-
-            combineFeatures = rootComp.features.combineFeatures
-            targetBody = bodies_to_merge[0]
-            for toolBody in bodies_to_merge[1:]:
-                toolBodies = adsk.core.ObjectCollection.create()
-                toolBodies.add(toolBody)
-                combineInput = combineFeatures.createInput(targetBody, toolBodies)
-                combineInput.operation = adsk.fusion.FeatureOperations.JoinFeatureOperation
-                combineFeature = combineFeatures.add(combineInput)
-                targetBody = combineFeature.bodies.item(0)
-                targetBody.name = "Sheathing"
-
-    except:
-        ui.messageBox(f"{traceback.format_exc()}", "mergeSheathin(): failed!\n")
-
-def mergeSheathing():
-    try:
-        sheathing_thickness = in_cm(0.625)
-        tolerance = in_cm(0.001)
-        combineFeatures = rootComp.features.combineFeatures
-        all_bodies = list(rootComp.bRepBodies)
-
-        # --- Step 1: Rename all bodies as "Sheathing" ---
-        for body in rootComp.bRepBodies:
-            boundingBox = body.boundingBox
-            width = boundingBox.maxPoint.y - boundingBox.minPoint.y
-            if abs(width - sheathing_thickness) < tolerance:
-                body.name = "SheathingPanel"
-                body.isVisible = False
-
-        # --- Step 2: Make copies and rename them "SheathingCopy" ---
-        copy_bodies = []
-        for body in rootComp.bRepBodies:
-            if body.name.startswith("SheathingPanel"):
-                body_copy = body.copyToComponent(rootComp)
-                body_copy.name = "SheathingCopy"
-                copy_bodies.append(body_copy)
-
-        # Keep merging until only one "Sheathing" body remains
-        for _ in range(2):  # Run up to twice
-            bodies_to_merge = []
-
-            for body in rootComp.bRepBodies:
-                if body.name.startswith("SheathingCopy"):
-                    bodies_to_merge.append(body)
-
-            if len(bodies_to_merge) <= 1:
-                break  # Done merging
-
-            combineFeatures = rootComp.features.combineFeatures
-            targetBody = bodies_to_merge[0]
-            for toolBody in bodies_to_merge[1:]:
-                toolBodies = adsk.core.ObjectCollection.create()
-                toolBodies.add(toolBody)
-                combineInput = combineFeatures.createInput(targetBody, toolBodies)
-                combineInput.operation = adsk.fusion.FeatureOperations.JoinFeatureOperation
-                combineFeature = combineFeatures.add(combineInput)
-                targetBody = combineFeature.bodies.item(0)
-                targetBody.name = "Sheathing"
-
-    except:
-        ui.messageBox(f"{traceback.format_exc()}", "mergeSheathing(): failed!")
-
 def camWorkspace():
     # Define global variables
     global cam, setups, doc, cam_product,camOcc, setupInput
@@ -1594,6 +1725,354 @@ def idThinFoam():
     except:
         ui.messageBox(f"thinFoam(): failed:\n{traceback.format_exc()}")
 
+def facingheadGeometry():
+    try:
+        # --- 1. Find Stock Body ---
+        stock_body = None
+        for body in rootComp.bRepBodies:
+            if body.name == 'Stock':
+                stock_body = body
+                break
+    
+        # --- 2. Find the Lowest Flat Face (bottom_face) ---
+        flat_faces = []
+        for face in stock_body.faces:
+            bb = face.boundingBox
+            # Check for flat face (perpendicular to Y)
+            if abs(bb.maxPoint.y - bb.minPoint.y) < 1e-6: # Using tolerance for flat check
+                flat_faces.append(face)
+
+        bottom_face = None
+        if flat_faces:
+            bottom_face = min(flat_faces, key=lambda f: f.boundingBox.minPoint.y)
+
+        # --- 3. Identify ALL Target Faces (Original + 0.5" Parallel) ---
+        target_faces = []
+        
+        # Set the reference Y-coordinate and the target offset
+        ref_y = bottom_face.boundingBox.minPoint.y
+        # Convert 0.5 inches to current design units (important for robustness)
+        offset = in_cm(0.5)
+        target_y = ref_y + offset
+        
+        # Add the original bottom face
+        target_faces.append(bottom_face)
+
+        # Tolerance check for coordinate comparison
+        TOLERANCE = 0.001 # A small tolerance for floating point comparison
+        
+        for face in stock_body.faces:
+            bb = face.boundingBox
+            face_y = bb.minPoint.y
+            
+            # Check 1: Is it a flat face? (Same as before)
+            is_flat = abs(bb.maxPoint.y - bb.minPoint.y) < 1e-6
+            
+            # Check 2: Is the face exactly 0.5 units away from the bottom face?
+            is_offset_correct = abs(face_y - target_y) < TOLERANCE
+            
+            # Ensure we don't accidentally add the bottom_face again if the offset is zero
+            is_not_original = abs(face_y - ref_y) > TOLERANCE 
+            
+            if is_flat and is_offset_correct and is_not_original:
+                target_faces.append(face)
+
+        #ui.messageBox(f"Collected {len(target_faces)} face(s) for selection.")
+
+        # --- 4. Apply Selections and Generate Toolpath ---
+        setup = cam.setups.itemByName('Charles')
+        op = setup.operations.itemByName('Facinghead')
+
+        # Get the stockContours parameter value object
+        contourParam: adsk.cam.CadContours2dParameterValue = op.parameters.itemByName('stockContours').value
+
+        # Get the CurveSelections object (needed to create the selection objects)
+        curveSelections = contourParam.getCurveSelections()
+
+        # 1. Create a new ObjectCollection to hold the desired geometry selections
+        # This collection *does* support the .add() method.
+        selection_collection_to_apply = adsk.core.ObjectCollection.create()
+
+        # 2. Clear any existing geometry selections from the original object
+        curveSelections.clear()
+
+        # 3. Iterate through your collected target faces
+        for face in target_faces:
+            # Create a new selection object
+            fc: adsk.cam.FaceContourSelection = curveSelections.createNewFaceContourSelection()
+            
+            # Set properties for the new selection
+            fc.loopType = adsk.cam.LoopTypes.AllLoops
+            fc.sideType = adsk.cam.SideTypes.StartOutsideSideType
+            
+            # *** FIX IS HERE: Assign only the SINGLE current face ***
+            fc.inputGeometry = [face] 
+            
+            # Add the single selection object to the collection to be applied
+            selection_collection_to_apply.add(fc) 
+
+        # 4. Apply the new collection of selection objects.
+        # The Fusion API accepts the ObjectCollection of FaceContourSelection objects here.
+        contourParam: adsk.cam.CadContours2dParameterValue = op.parameters.itemByName('stockContours').value
+        curveSelections = contourParam.getCurveSelections()
+        curveSelections.clear()
+
+        new_selection_list = adsk.core.ObjectCollection.create()
+
+        for face in target_faces:
+            fc: adsk.cam.FaceContourSelection = curveSelections.createNewFaceContourSelection()
+            fc.loopType = adsk.cam.LoopTypes.AllLoops
+            fc.sideType = adsk.cam.SideTypes.StartOutsideSideType
+            fc.inputGeometry = [face] 
+            new_selection_list.add(fc) 
+            
+        curveSelections.curveSelections = new_selection_list
+        
+        contourParam.applyCurveSelections(curveSelections)
+        
+        cam.generateToolpath(op)
+            
+    except:
+        ui.messageBox(f"facingheadGeometry(): failed:\n{traceback.format_exc()}")
+
+def oldbrickFeatureGeometry():
+    try:
+        # --- 1. Setup and Find Exterior Body ---
+        exterior_body = None
+        for body in rootComp.bRepBodies:
+            if body.name == 'Exterior':
+                exterior_body = body
+                break
+        
+        if not exterior_body:
+            ui.messageBox("Error: 'Exterior' body not found.")
+            return
+
+        # --- 2. Find the Lowest Flat Face (Reference Plane) ---
+        flat_faces = []
+        for face in exterior_body.faces:
+            bb = face.boundingBox
+            if abs(bb.maxPoint.y - bb.minPoint.y) < 1e-6:
+                flat_faces.append(face)
+
+        bottom_face = None
+        if flat_faces:
+            bottom_face = min(flat_faces, key=lambda f: f.boundingBox.minPoint.y)
+        
+        if not bottom_face:
+            ui.messageBox("Error: Could not find a flat face on the 'Exterior' body.")
+            return
+
+        # --- 3. Identify Target Plane and Faces (0.5" Above) ---
+        ref_y = bottom_face.boundingBox.minPoint.y
+        offset = in_cm(0.5)
+        target_y = ref_y + offset
+        
+        TOLERANCE = 0.001
+        
+        target_faces = []
+        for face in exterior_body.faces:
+            bb = face.boundingBox
+            face_y = bb.minPoint.y
+            
+            is_flat = abs(bb.maxPoint.y - bb.minPoint.y) < 1e-6
+            is_offset_correct = abs(face_y - target_y) < TOLERANCE
+            
+            if is_flat and is_offset_correct:
+                target_faces.append(face)
+
+        if not target_faces:
+            ui.messageBox(f"Error: No flat faces found at {offset:.3f} units above bottom.")
+            return
+
+        # --- 4. Collect & Hash Edges from the Bottom Face ---
+        # A set stores unique (start_x, start_z, end_x, end_z) tuples for quick lookups.
+        bottom_edge_set = set()
+        EDGE_COORD_TOLERANCE = 1e-6 # Stricter tolerance for coordinate hashing
+        
+        for edge in bottom_face.edges:
+            v1 = edge.startVertex.geometry
+            v2 = edge.endVertex.geometry
+            
+            # Create a canonical tuple for the edge (independent of start/end direction)
+            coords = sorted([
+                (round(v1.x, 6), round(v1.z, 6)),
+                (round(v2.x, 6), round(v2.z, 6))
+            ])
+            bottom_edge_set.add(coords[0] + coords[1]) # Hashed as (vA_x, vA_z, vB_x, vB_z)
+
+        # --- 5. Validate and Collect Target Edges ---
+        target_edges = []
+        
+        for face in target_faces:
+            for edge in face.edges:
+                v1 = edge.startVertex.geometry
+                v2 = edge.endVertex.geometry
+                
+                # Check if the edge is a valid candidate (i.e., horizontal/parallel to XZ plane)
+                if abs(v1.y - target_y) > TOLERANCE or abs(v2.y - target_y) > TOLERANCE:
+                    continue # Skip non-horizontal edges
+                    
+                # Create the canonical tuple for the current target edge
+                coords = sorted([
+                    (round(v1.x, 6), round(v1.z, 6)),
+                    (round(v2.x, 6), round(v2.z, 6))
+                ])
+                candidate_hash = coords[0] + coords[1]
+                
+                # Check if this edge exists in the bottom set (i.e., it is a match .5in away)
+                if candidate_hash in bottom_edge_set:
+                    target_edges.append(edge)
+
+        ui.messageBox(f"Collected {len(target_edges)} matched edge(s) for selection.")
+
+        # --- 6. Apply Selections and Generate Toolpath ---
+        setup = cam.setups.itemByName('Charles')
+        op = setup.operations.itemByName('Brick Feature EM')
+
+        contourParam: adsk.cam.CadContours2dParameterValue = op.parameters.itemByName('contours').value
+        curveSelections = contourParam.getCurveSelections()
+        curveSelections.clear()
+
+        new_selection_list = adsk.core.ObjectCollection.create()
+
+        for edge in target_edges:
+            es: adsk.cam.ChainSelection = curveSelections.createNewChainSelection() 
+            es.inputGeometry = [edge] 
+            new_selection_list.add(es) 
+            
+        curveSelections.curveSelections = new_selection_list
+        contourParam.applyCurveSelections(curveSelections)
+        
+        cam.generateToolpath(op)
+        
+        ui.statusBar.showTemporaryMessage(f"Toolpath generated for '{op.name}' with {len(target_edges)} edge(s) selected.")
+            
+    except:
+        ui.messageBox(f"brickFeatureGeometry(): failed:\n{traceback.format_exc()}")
+
+def brickFeatureGeometry():
+    try:
+        # --- 1. Setup and Find Exterior Body ---
+        exterior_body = None
+        for body in rootComp.bRepBodies:
+            if body.name == 'Exterior':
+                exterior_body = body
+                break
+        
+        if not exterior_body:
+            ui.messageBox("Error: 'Exterior' body not found.")
+            return
+
+        # --- 2. Find the Lowest Flat Face (Reference Plane) ---
+        flat_faces = []
+        for face in exterior_body.faces:
+            bb = face.boundingBox
+            if abs(bb.maxPoint.y - bb.minPoint.y) < 1e-6:
+                flat_faces.append(face)
+
+        bottom_face = None
+        if flat_faces:
+            bottom_face = min(flat_faces, key=lambda f: f.boundingBox.minPoint.y)
+        
+        if not bottom_face:
+            ui.messageBox("Error: Could not find a flat face on the 'Exterior' body.")
+            return
+
+        # --- 3. Identify Target Plane and Faces (0.5" Above) ---
+        ref_y = bottom_face.boundingBox.minPoint.y
+        offset = in_cm(0.5)
+        target_y = ref_y + offset
+        
+        TOLERANCE = 0.001
+        
+        target_faces = []
+        for face in exterior_body.faces:
+            bb = face.boundingBox
+            face_y = bb.minPoint.y
+            
+            is_flat = abs(bb.maxPoint.y - bb.minPoint.y) < 1e-6
+            is_offset_correct = abs(face_y - target_y) < TOLERANCE
+            
+            if is_flat and is_offset_correct:
+                target_faces.append(face)
+
+        if not target_faces:
+            ui.messageBox(f"Error: No flat faces found at {offset:.3f} units above bottom.")
+            return
+
+        # --- 4. Collect & Hash Edges from the Bottom Face ---
+        bottom_edge_set = set()
+        EDGE_COORD_TOLERANCE = 1e-6 
+        
+        for edge in bottom_face.edges:
+            v1 = edge.startVertex.geometry
+            v2 = edge.endVertex.geometry
+            
+            coords = sorted([
+                (round(v1.x, 6), round(v1.z, 6)),
+                (round(v2.x, 6), round(v2.z, 6))
+            ])
+            bottom_edge_set.add(coords[0] + coords[1])
+
+        # --- 5. Validate and Collect Target Edges ---
+        target_edges = []
+        
+        for face in target_faces:
+            for edge in face.edges:
+                v1 = edge.startVertex.geometry
+                v2 = edge.endVertex.geometry
+                
+                if abs(v1.y - target_y) > TOLERANCE or abs(v2.y - target_y) > TOLERANCE:
+                    continue 
+                    
+                coords = sorted([
+                    (round(v1.x, 6), round(v1.z, 6)),
+                    (round(v2.x, 6), round(v2.z, 6))
+                ])
+                candidate_hash = coords[0] + coords[1]
+                
+                if candidate_hash in bottom_edge_set:
+                    target_edges.append(edge)
+
+        ui.messageBox(f"Collected {len(target_edges)} matched edge(s) for selection.")
+        
+        # --- 6. Apply Selections and Generate Toolpath ---
+        setup = cam.setups.itemByName('Charles')
+        op = setup.operations.itemByName('Brick Feature EM')
+
+        contourParam: adsk.cam.CadContours2dParameterValue = op.parameters.itemByName('contours').value
+        curveSelections: adsk.cam.CurveSelections = contourParam.getCurveSelections()
+        chain: adsk.cam.CurveSelection = curveSelections.createNewChainSelection()
+        chain.chain_mode = 'open'
+        chain.inputGeometry = [target_edges]
+        contourParam.applyCurveSelections(curveSelections)
+        cam.generateToolpath(op)
+        
+        ui.messageBox(f"Toolpath generated for '{op.name}' with 1 explicit open contour chain selected.")
+            
+    except:
+        ui.messageBox(f"brickFeatureGeometry(): failed:\n{traceback.format_exc()}")
+
+def showBodies():
+    try:
+        bodies = rootComp.bRepBodies
+    
+        prefixes_to_show = ('Bump') # You can add more names, Example: ('Stud', 'Track', 'Bump')
+        for body in bodies: 
+            # Check if the body name starts with any of the required prefixes
+            if body.name.startswith(prefixes_to_show):
+                body.isVisible = True
+             
+            if body.name == "Sheathing":
+                body.isVisible = True
+
+            if body.name == "Exterior":
+                body.isVisible = True
+    
+    except:
+        ui.messageBox(f"showBodies(): failed:\n{traceback.format_exc()}")
+
 def errorDetection(): 
     try: 
         # Find the edge of the stud body for our WCS
@@ -1684,4 +2163,3 @@ def scriptSummary():
                     adsk.core.MessageBoxIconTypes.InformationIconType)
     except:
         ui.messageBox(f"scriptSummary(): failed:\n{traceback.format_exc()}")
- 
