@@ -21,41 +21,41 @@ def run(context):
     script_summary = []
 
     # list of functions
-    rotateBodiesToFront()   # Rotates the bodies around the Z axis so the front of the panel is the front view.
-    moveBodiesToOrgin()     # Moves all bodies to the origin.
-    openPDF()               # Opens the PDF drawing for the panel.
-    stockBody()             # Create a stock body for Charles setup.
-    changeUnits()           # Change units to inches.
-    idStuds()               # Identify and rename stud bodies.
-    idTrack()               # Identify and rename track bodies.
-    idCRC()                 # Identify and rename CRC bodies.
-    idFoam()                # Identify and rename foam bodies.
-    idSheathing()           # Identify and rename sheathing bodies.
-    mergeSheathing()        # Merge all sheathing panels into one.
-    idRotatedBump()         # Identify and rename bump bodies that are on an angle.
-    idBump()                # Identify and rename bump bodies.
-    idWindows()             # Identifies windows and determines if the window bevel toolpath is needed.
-    idOrigin()              # Identifies WCS X and Y axis from the stud and track bodies.
-    idReturn()              # Is there a return on the right side of the panel that would interfer with WCS?
-    melvinOrgin()           # Creates a sketch and contruction point for the Melvin WCS.
-    charlesOrgin()          # Creates a sketch and contruction point for the Charles WCS.
-    camWorkspace()          # Create the cam workspace.
-    melvinSetup()           # Create the Melvin setup.
-    charlesSetup()          # Create the Charles setup.
-    idThinFoam()            # Checks for thin foam and adjusts the adjust toolpath as necessary.
-    showBodies()            # Makes bodies visible and ready for geometry selection.
-    facingheadGeometry()   # Selects the top face(s) for the facing operation and generates the toolpath.
-    brickFeatureGeometry() # Still testing.
-    errorDetection()        # Compares 'Frame' and 'Sheathing' and 'Foam' and 'Sheathing' to detect errors from Revit export.
-    scriptSummary()         # Displays a summary at the end of the script.
+    rotateBodiesToFront()       # Rotates the bodies around the Z axis so the front of the panel is the front view.
+    moveBodiesToOrigin()        # Moves all bodies to the origin.
+    openPDF()                   # Opens the PDF drawing for the panel.
+    stockBody()                 # Create a stock body for Charles setup.
+    changeUnits()               # Change units to inches.
+    idStuds()                   # Identify and rename stud bodies.
+    idTrack()                   # Identify and rename track bodies.
+    idCRC()                     # Identify and rename CRC bodies.
+    idFoam()                    # Identify and rename foam bodies.
+    idSheathing()               # Identify and rename sheathing bodies.
+    mergeSheathing()            # Merge all sheathing panels into one.
+    idRotatedBump()             # Identify and rename bump bodies that are on an angle.
+    idBump()                    # Identify and rename bump bodies.
+    idWindows()                 # Identifies windows and determines if the window bevel toolpath is needed.
+    idOrigin()                  # Identifies WCS X and Y axis from the stud and track bodies.
+    idReturn()                  # Is there a return on the right side of the panel that would interfere with WCS?
+    melvinOrigin()              # Creates a sketch and construction point for the Melvin WCS.
+    charlesOrigin()             # Creates a sketch and construction point for the Charles WCS.
+    camWorkspace()              # Create the cam workspace.
+    melvinSetup()               # Create the Melvin setup.
+    charlesSetup()              # Create the Charles setup.
+    idThinFoam()                # Checks for thin foam and adjusts the adjust toolpath as necessary.
+    showBodies()                # Makes bodies visible and ready for geometry selection.
+    facingheadGeometry()        # Selects the top face(s) for the facing operation and generates the toolpath.
+    brickFeatureGeometry()      # Still testing.
+    errorDetection()            # Compares 'Frame' and 'Sheathing' and 'Foam' and 'Sheathing' to detect errors from Revit export.
+    scriptSummary()             # Displays a summary at the end of the script.
 
-def addMessage(msg):        # This function adds messages throughout the script to give a summary at the end.
+def addMessage(msg):            # This function adds messages throughout the script to give a summary at the end.
     try:
         script_summary.append(f"\u2022 {msg}\n")
     except:
         ui.messageBox(f"addMessage(): failed:\n{traceback.format_exc()}")
 
-def in_cm(x):               # This function converts inches to cm.
+def in_cm(x):                   # This function converts inches to cm.
     return x * 2.54
 
 def rotateBodiesToFront():
@@ -134,7 +134,7 @@ def rotateBodiesToFront():
     except:
         ui.messageBox(f"rotateBodiesToFront() failed:\n{traceback.format_exc()}")
 
-def moveBodiesToOrgin():
+def moveBodiesToOrigin():
     try:
         # Find 'Body1' and rename as "Exterior"
         body1 = None
@@ -173,7 +173,7 @@ def moveBodiesToOrgin():
         # Fit the view to the new position of the assembly
         app.activeViewport.fit()
     except:
-        ui.messageBox(f"moveBodiesToOrgin(): failed:\n{traceback.format_exc()}")
+        ui.messageBox(f"moveBodiesToOrigin(): failed:\n{traceback.format_exc()}")
     
 def stockBody():
     try: 
@@ -527,7 +527,7 @@ def modSheathing():
     except:
         ui.messageBox('modSheathing Failed:\n{}'.format(traceback.format_exc()))
 
-def idRotatedBump():        # This function works but is sloppy and needs to be cleaned up.
+def idRotatedBump():            # This function works but is sloppy and needs to be cleaned up.
     global eastBump, westBump
     eastBump = False
     westBump = False  
@@ -692,7 +692,7 @@ def idBump():
     except:
         ui.messageBox(f"idBump(): failed:\n{traceback.format_exc()}")
 
-def idWindows():            # This function tries to detect if the panel has windows. Goal is to determine to add the window bevel toolpath or not.
+def idWindows():                # This function tries to detect if the panel has windows. Goal is to determine to add the window bevel toolpath or not.
     
     # Will need to change logic so that it does not pick up small holes or air vents.
     global windows
@@ -798,7 +798,7 @@ def idWindows():            # This function tries to detect if the panel has win
     except:
         ui.messageBox('identifyWindows() Failed:\n{}'.format(traceback.format_exc()))
 
-def bumpEast():             # This function cuts the "Stock" and "Foam" bodies to prevent the facinghead from interfeering with the bump.
+def bumpEast():                 # This function cuts the "Stock" and "Foam" bodies to prevent the facinghead from interfering with the bump.
     try:
         # Hide all bodies in the root component
         for body in rootComp.bRepBodies:
@@ -867,7 +867,7 @@ def bumpEast():             # This function cuts the "Stock" and "Foam" bodies t
     except:
         ui.messageBox(f"bumpEast(): failed:\n{traceback.format_exc()}")
 
-def bumpWest():             # This function cuts the "Stock" and "Foam" bodies to prevent the facinghead from interfeering with the bump.
+def bumpWest():                 # This function cuts the "Stock" and "Foam" bodies to prevent the facinghead from interfering with the bump.
     try:
         # Hide all bodies in the root component
         for body in rootComp.bRepBodies:
@@ -1049,7 +1049,7 @@ def idReturn():
     except:
         ui.messageBox(f"{traceback.format_exc()}", "isReturn(): failed!")
 
-def melvinOrgin():
+def melvinOrigin():
     try:
         body = rootComp.bRepBodies.item(0)
         
@@ -1081,7 +1081,7 @@ def melvinOrgin():
         if any("Track" in body.name for body in rootComp.bRepBodies):
             offset_z = track_max_point.z
 
-        # This tries to set the WCS X axis to location ideneified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
+        # This tries to set the WCS X axis to location identified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
         if east_return_result == adsk.core.DialogResults.DialogYes:
             if any("Stud" in body.name for body in rootComp.bRepBodies):
                 offset_x = stud_max_point.x
@@ -1091,7 +1091,7 @@ def melvinOrgin():
             else:
                 offset_x = corner_x - in_cm(4.6875)
 
-        # This tries to set the WCS Y axis to location ideneified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
+        # This tries to set the WCS Y axis to location identified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
         if east_return_result == adsk.core.DialogResults.DialogYes:
             if any("Track" in body.name for body in rootComp.bRepBodies):
                 offset_z = track_max_point.z
@@ -1134,7 +1134,7 @@ def melvinOrgin():
         # Define WCS Z axis position
         bl_offset_y = bl_corner_y - in_cm(6.0)
 
-        # This tries to set the WCS X axis to location ideneified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
+        # This tries to set the WCS X axis to location identified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
         if west_return_result == adsk.core.DialogResults.DialogYes:
             if any("Stud" in body.name for body in rootComp.bRepBodies):
                 bl_offset_x = stud_min_point.x
@@ -1143,7 +1143,7 @@ def melvinOrgin():
             else:
                 bl_offset_x = bl_corner_x + in_cm(4.6875)
 
-        # This tries to set the WCS Y axis to location ideneified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
+        # This tries to set the WCS Y axis to location identified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
         if west_return_result == adsk.core.DialogResults.DialogYes:
             if any("Track" in body.name for body in rootComp.bRepBodies):
                 bl_offset_x = bl_corner_x - (abs(track_min_point.z))
@@ -1165,9 +1165,9 @@ def melvinOrgin():
         app.activeViewport.fit()
 
     except:
-        ui.messageBox(f"melvinOrgin(): failed:\n{traceback.format_exc()}")
+        ui.messageBox(f"melvinOrigin(): failed:\n{traceback.format_exc()}")
 
-def charlesOrgin():
+def charlesOrigin():
     try:
         body = rootComp.bRepBodies.item(0)
         
@@ -1221,7 +1221,7 @@ def charlesOrgin():
         new_point.name = 'Charles WCS'
         app.activeViewport.fit()
     except:
-        ui.messageBox(f"charlesOrgin(): failed:\n{traceback.format_exc()}")
+        ui.messageBox(f"charlesOrigin(): failed:\n{traceback.format_exc()}")
 
 def camWorkspace():
     # Define global variables
@@ -1672,7 +1672,7 @@ def charlesSetup():
     except:
         ui.messageBox(f"{traceback.format_exc()}", "charlesSetup(): failed!")
 
-def bumpMod():              # This function modifies the Facinghead toolpath if a bump is decected
+def bumpMod():                  # This function modifies the Facinghead toolpath if a bump is detected
     try:
         if 'Charles' in [setup.name for setup in setups]:
             for body in rootComp.bRepBodies:
@@ -1834,122 +1834,6 @@ def facingheadGeometry():
             
     except:
         ui.messageBox(f"facingheadGeometry(): failed:\n{traceback.format_exc()}")
-
-def oldbrickFeatureGeometry():
-    try:
-        # --- 1. Setup and Find Exterior Body ---
-        exterior_body = None
-        for body in rootComp.bRepBodies:
-            if body.name == 'Exterior':
-                exterior_body = body
-                break
-        
-        if not exterior_body:
-            ui.messageBox("Error: 'Exterior' body not found.")
-            return
-
-        # --- 2. Find the Lowest Flat Face (Reference Plane) ---
-        flat_faces = []
-        for face in exterior_body.faces:
-            bb = face.boundingBox
-            if abs(bb.maxPoint.y - bb.minPoint.y) < 1e-6:
-                flat_faces.append(face)
-
-        bottom_face = None
-        if flat_faces:
-            bottom_face = min(flat_faces, key=lambda f: f.boundingBox.minPoint.y)
-        
-        if not bottom_face:
-            ui.messageBox("Error: Could not find a flat face on the 'Exterior' body.")
-            return
-
-        # --- 3. Identify Target Plane and Faces (0.5" Above) ---
-        ref_y = bottom_face.boundingBox.minPoint.y
-        offset = in_cm(0.5)
-        target_y = ref_y + offset
-        
-        TOLERANCE = 0.001
-        
-        target_faces = []
-        for face in exterior_body.faces:
-            bb = face.boundingBox
-            face_y = bb.minPoint.y
-            
-            is_flat = abs(bb.maxPoint.y - bb.minPoint.y) < 1e-6
-            is_offset_correct = abs(face_y - target_y) < TOLERANCE
-            
-            if is_flat and is_offset_correct:
-                target_faces.append(face)
-
-        if not target_faces:
-            ui.messageBox(f"Error: No flat faces found at {offset:.3f} units above bottom.")
-            return
-
-        # --- 4. Collect & Hash Edges from the Bottom Face ---
-        # A set stores unique (start_x, start_z, end_x, end_z) tuples for quick lookups.
-        bottom_edge_set = set()
-        EDGE_COORD_TOLERANCE = 1e-6 # Stricter tolerance for coordinate hashing
-        
-        for edge in bottom_face.edges:
-            v1 = edge.startVertex.geometry
-            v2 = edge.endVertex.geometry
-            
-            # Create a canonical tuple for the edge (independent of start/end direction)
-            coords = sorted([
-                (round(v1.x, 6), round(v1.z, 6)),
-                (round(v2.x, 6), round(v2.z, 6))
-            ])
-            bottom_edge_set.add(coords[0] + coords[1]) # Hashed as (vA_x, vA_z, vB_x, vB_z)
-
-        # --- 5. Validate and Collect Target Edges ---
-        target_edges = []
-        
-        for face in target_faces:
-            for edge in face.edges:
-                v1 = edge.startVertex.geometry
-                v2 = edge.endVertex.geometry
-                
-                # Check if the edge is a valid candidate (i.e., horizontal/parallel to XZ plane)
-                if abs(v1.y - target_y) > TOLERANCE or abs(v2.y - target_y) > TOLERANCE:
-                    continue # Skip non-horizontal edges
-                    
-                # Create the canonical tuple for the current target edge
-                coords = sorted([
-                    (round(v1.x, 6), round(v1.z, 6)),
-                    (round(v2.x, 6), round(v2.z, 6))
-                ])
-                candidate_hash = coords[0] + coords[1]
-                
-                # Check if this edge exists in the bottom set (i.e., it is a match .5in away)
-                if candidate_hash in bottom_edge_set:
-                    target_edges.append(edge)
-
-        ui.messageBox(f"Collected {len(target_edges)} matched edge(s) for selection.")
-
-        # --- 6. Apply Selections and Generate Toolpath ---
-        setup = cam.setups.itemByName('Charles')
-        op = setup.operations.itemByName('Brick Feature EM')
-
-        contourParam: adsk.cam.CadContours2dParameterValue = op.parameters.itemByName('contours').value
-        curveSelections = contourParam.getCurveSelections()
-        curveSelections.clear()
-
-        new_selection_list = adsk.core.ObjectCollection.create()
-
-        for edge in target_edges:
-            es: adsk.cam.ChainSelection = curveSelections.createNewChainSelection() 
-            es.inputGeometry = [edge] 
-            new_selection_list.add(es) 
-            
-        curveSelections.curveSelections = new_selection_list
-        contourParam.applyCurveSelections(curveSelections)
-        
-        cam.generateToolpath(op)
-        
-        ui.statusBar.showTemporaryMessage(f"Toolpath generated for '{op.name}' with {len(target_edges)} edge(s) selected.")
-            
-    except:
-        ui.messageBox(f"brickFeatureGeometry(): failed:\n{traceback.format_exc()}")
 
 def brickFeatureGeometry():
     try:
