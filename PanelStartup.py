@@ -3,9 +3,14 @@
 # TODO: Create script to automate cutting the "L" shape notches in the back of the sheathing.
 # TODO: Need to understand when bumps are framed at Melvin vs after. Then change bumpEast() and bumpWest() cut the new copy of sheathing.
 # TODO: Add logic for identifying bumps and catch all. See 8&L Panel 10014.
-# TODO: Get new geometry selecting functions to work with more/all panels. See Panel 11010. Panel 11027 works 100%! but does not need Brick EM
+# TODO: Get new geometry selecting functions to work with more/all panels. See Panel 11010. Panel 11027 and 09035 works 100%!
 # TODO: Brick Feature EM needs logic: If edge = min and max x or z, it's not need.
 # TODO: Perimeter Above Sheathing is not needed for every panel.
+# TODO: If there is a return, perimeter selection needs to change to include .5in brick feature and come from the bottom face of the panel.
+# TODO: 'Perimeter Above Sheathing' needs work to include returns.
+# TODO: Window Bevel needs to work with returns/edge of panels.
+# TODO: 'Return EM' has not geometry selection function.
+
 
 import adsk.core, adsk.fusion, math, re, subprocess, os, sys, time, webbrowser, traceback
 
@@ -53,8 +58,12 @@ def run(context):
     perimeterGeometry()         # Selects the geometry for the  'Perimeter Ballnose EM' operation and generates it's toolpath.
     aboveSheathingGeometry()    # Selects the geometry for the  'Perimeter Above Sheathing' operation and generates it's toolpath.
     windowBevelGeometry()       # Selects the window bevel edge(s) and generates the toolpath.
-    brickFeatureGeometry()      # Selects edges for both brick feature operations and generates their toolpaths.
+    brickFeatureEMGeometry()
+    brickFeatureFMGeometry()
     bumpCleanUpGeometry()       # Selects edges for the east bump clean up operation and generates its toolpaths.
+    eastReturnEMGeometry()       # Selects faces for the east return End mill operation and generates its toolpath.
+    eastReturnGeometry()        # Selects faces for the east return face operation and generates its toolpath.
+    returnBrickGeometry()
     errorDetection()            # Compares 'Frame' and 'Sheathing' and 'Foam' and 'Sheathing' to detect errors from Revit export.
     scriptSummary()             # Displays a summary at the end of the script.
 
@@ -700,111 +709,93 @@ def idBump():
     except:
         ui.messageBox(f"idBump(): failed:\n{traceback.format_exc()}")
 
-def idWindows():                # This function tries to detect if the panel has windows. Goal is to determine to add the window bevel toolpath or not.
-    
-    # Will need to change logic so that it does not pick up small holes or air vents.
+def idWindows():
     global windows
     windows = False
-    loopTest = False
 
     try:
-        target_y = -6.625     # inches
-        tolerance = 0.01      # inches tolerance
+        target_y_cm = in_cm(-6.625)
+        tol_y = in_cm(0.001)  # small tolerance for Y comparison
 
-        unitsMgr = design.unitsManager
-        target_y_cm = unitsMgr.evaluateExpression(f"{target_y} in", "cm")
-        tol_cm = unitsMgr.evaluateExpression(f"{tolerance} in", "cm")
+        ext_body = rootComp.bRepBodies.itemByName("Exterior")
+        if not ext_body:
+            return
 
-        for body in rootComp.bRepBodies:
-            if body.name != "Exterior":
-                continue  # only check the sheathing body
+        window_start_cm = None
+        window_end_cm = None
+        window_z_top_cm = None
 
-            #ui.messageBox(f'Checking body: {body.name}')
+        # --- STEP 1: Find window face and X/Z extents ---
+        for face in ext_body.faces:
+            geom = face.geometry
+            if not isinstance(geom, adsk.core.Plane):
+                continue
 
-            for face in body.faces:
-                geom = face.geometry
-                if not isinstance(geom, adsk.core.Plane):
-                    continue  # skip non-planar faces
+            normal = geom.normal
+            origin = geom.origin
 
-                normal = geom.normal
-                origin = geom.origin
+            # ZX-plane (normal along Y)
+            if abs(abs(normal.y) - 1.0) > 1e-3:
+                continue
 
-                # ZX plane → normal should be along ±Y
-                if abs(abs(normal.y) - 1.0) > 1e-3:
+            if abs(origin.y - target_y_cm) > in_cm(0.01):
+                continue
+
+            for loop in face.loops:
+                if loop.isOuter:
                     continue
 
-                # Check for the plane located at Y = -6.625 in (within tolerance)
-                if abs(origin.y - target_y_cm) > tol_cm:
-                    continue
+                min_x = float('inf')
+                max_x = float('-inf')
+                min_z = float('-inf')
 
-                #ui.messageBox(f'Found ZX face at Y={origin.y:.4f} cm (~{target_y} in)')
+                for edge in loop.edges:
+                    bbox = edge.boundingBox
+                    min_x = min(min_x, bbox.minPoint.x)
+                    max_x = max(max_x, bbox.maxPoint.x)
+                    min_z = max(min_z, bbox.minPoint.z)
 
-                # Detect holes/voids on this face
-                loops = face.loops
-                for loop_index in range(loops.count - 1):
-                    loop = loops.item(loop_index)
+                window_start_cm = min_x
+                window_end_cm = max_x
+                window_z_bottom_cm = min_z - 2.54
 
-                    if loop:
-                        loopTest = True
-              
-                    min_x_cm = float('inf')
-                    max_x_cm = float('-inf')
-                    for edge in loop.edges:
-                        edge_bBox = edge.boundingBox
-                        
-                        # Update the overall min/max X for the entire loop
-                        min_x_cm = min(min_x_cm, edge_bBox.minPoint.x)
-                        max_x_cm = max(max_x_cm, edge_bBox.maxPoint.x)
-                    
-                    # Store the extents (using the first window found for now)
-                    window_x_extents = (min_x_cm, max_x_cm)
+        if window_start_cm is None:
+            return  # no window found
 
-                    # --- Output for Debugging (similar to your original code) ---
-                    edge_lengths_in = [
-                        round(unitsMgr.convert(edge.length, "cm", "in"), 3) for edge in loop.edges
-                    ]
+        min_z = ext_body.boundingBox.minPoint.z + 2.54
 
-                    # This is your new window location data
-                    window_start_in = round(unitsMgr.convert(min_x_cm, "cm", "in"), 3)
-                    window_end_in = round(unitsMgr.convert(max_x_cm, "cm", "in"), 3)
-        
-        if loopTest == True:
-            for body in rootComp.bRepBodies:
-                if body.name == "Exterior":  
-                    
-                    # Get bounding box for X limits
-                    bb = body.boundingBox
-                    minX = bb.minPoint.x + window_start_in
-                    maxX = bb.maxPoint.x - window_end_in
+        # --- STEP 2: Check for edges under window ---
+        for edge in ext_body.edges:
+            v1 = edge.startVertex.geometry
+            v2 = edge.endVertex.geometry
 
-                    minY = bb.minPoint.y
-                    maxY = bb.maxPoint.y
+            # Both vertices at Y = target_y_cm
+            if v1.y == target_y_cm and v2.y == target_y_cm:
+                continue
 
-                    # Loop through all vertices
-                    for v in body.vertices:
-                        x = v.geometry.x
-                        y = v.geometry.y
+            # Edge within X range of window
+            # edge_min_x = min(v1.x, v2.x)
+            # edge_max_x = max(v1.x, v2.x)
+            # if edge_max_x < window_start_cm or edge_min_x > window_end_cm:
+            #     continue
 
-                        if x >= minX and x <= maxX:
-                            if y < minY:
-                                minY = y
-                            if y > maxY:
-                                maxY = y
+            if v1.x == v2.x:
+                continue
 
-                    # Thickness along Y in inches
-                    thickness = abs(maxY - minY) / 2.54  # cm to inches
-
-                    if thickness is not None and thickness > 6.9:
-                        windows = True
-                        #addMessage("A window with foam under it was detected.")
-        
-        if windows == False:
-            #addMessage("A window without foam under it was detected.")
-            None
-        # return windows
+            # Edge within Z range under window
+            # edge_min_z = min(v1.z, v2.z)
+            # edge_max_z = max(v1.z, v2.z)
+            # if edge_max_z < min_z or edge_min_z > window_z_bottom_cm:
+            #     windows = True
+            
+            if v1.z > min_z and v1.z < window_z_bottom_cm:
+                #ui.messageBox(f"Edge: v1.z = {(v1.z / 2.54)}, v2.z = {(v2.z / 2.54)}")
+                windows = True
+            
+        ui.messageBox(f"Window: X min = {(min_x / 2.54)} \n X max = {(max_x / 2.54)} \n Z = {(min_z / 2.54)}")
 
     except:
-        ui.messageBox('identifyWindows() Failed:\n{}'.format(traceback.format_exc()))
+        ui.messageBox('idWindows() Failed:\n{}'.format(traceback.format_exc()))
 
 def bumpEast():                 # This function cuts the "Stock" and "Foam" bodies to prevent the facinghead from interfering with the bump.
     try:
@@ -971,9 +962,22 @@ def openPDF():
                 if filename.lower().endswith('.pdf') and panel_number in filename.lower():
                     full_path = os.path.join(root, filename)
                     os.startfile(full_path)
-    except:
-        ui.messageBox(f"{traceback.format_exc()}", "openPDF(): failed!")
 
+        # Search PDF for important details.
+        search_terms = [
+                        "P-203",  # This is the 1 inch cut above the sheathing for corner brick.
+                        # Add more here if needed
+                        ]
+        pdf_checker = r"C:\Users\ahughes\AppData\Roaming\Autodesk\Autodesk Fusion 360\API\Scripts\PanelStartup\pdf_text_search.py"
+
+        # # Build the command
+        python_exe = r"C:\Users\ahughes\AppData\Local\Programs\Python\Python313\pythonw.exe"
+        cmd = [python_exe, pdf_checker, directory_path, panel_number] + search_terms
+        subprocess.run(cmd)
+
+    except:
+        ui.messageBox(f"openPDF(): failed:\n{traceback.format_exc()}")
+        
 def idOrigin():
     try:
         # Find the edge of the stud body for our WCS
@@ -1656,24 +1660,22 @@ def charlesSetup():
             if east_return_result == adsk.core.DialogResults.DialogYes:
                 changeEastReturnEM = setup.operations.itemByName('Return EM')
                 changeEastReturnEM.parameters.itemByName("view_orientation_axisZ").value.value = [rootComp.yZConstructionPlane]
+                changeEastReturnFM = setup.operations.itemByName('Return FM')
+                changeEastReturnFM.parameters.itemByName("view_orientation_axisZ").value.value = [rootComp.yZConstructionPlane]
 
             if west_return_result == adsk.core.DialogResults.DialogYes:
                 changeWestReturnEM = setup.operations.itemByName('Return EM')
                 changeWestReturnEM.parameters.itemByName("view_orientation_axisZ").value.value = [rootComp.yZConstructionPlane]
                 changeWestReturnEM.parameters.itemByName("view_orientation_flipZ").value.value = True
-                            
+                changeWestReturnFM = setup.operations.itemByName('Return FM')
+                changeWestReturnFM.parameters.itemByName("view_orientation_axisZ").value.value = [rootComp.yZConstructionPlane]
+                changeWestReturnFM.parameters.itemByName("view_orientation_flipZ").value.value = True
+                 
             if idEastReturnBrickDetail():
-                changeEastReturnFM = setup.operations.itemByName('Return FM')
-                changeEastReturnFM.parameters.itemByName("view_orientation_axisZ").value.value = [rootComp.yZConstructionPlane]
-
                 eastReturnBrick = setup.operations.itemByName('Return Brick FM')
                 eastReturnBrick.parameters.itemByName('view_orientation_axisZ').value.value = [rootComp.yZConstructionPlane]
 
             if idWestReturnBrickDetail():
-                changeWestReturnFM = setup.operations.itemByName('Return FM')
-                changeWestReturnFM.parameters.itemByName("view_orientation_axisZ").value.value = [rootComp.yZConstructionPlane]
-                changeWestReturnFM.parameters.itemByName("view_orientation_flipZ").value.value = True
-
                 westReturnBrick = setup.operations.itemByName('Return Brick FM')
                 westReturnBrick.parameters.itemByName('view_orientation_axisZ').value.value = [rootComp.yZConstructionPlane]
                 westReturnBrick.parameters.itemByName("view_orientation_flipZ").value.value = True
@@ -1744,6 +1746,7 @@ def idThinFoam():
 
 def melvinGeometry():
     try:
+        
         # ---- CONFIG ----
         BODY_NAME = "Sheathing"
         SETUP_NAME = "Melvin"
@@ -1769,7 +1772,7 @@ def melvinGeometry():
                 body = b
                 break
         if not body:
-            ui.messageBox(f"Body '{BODY_NAME}' not found.")
+            #ui.messageBox(f"Body '{BODY_NAME}' not found.")
             return
 
         # ---- GET EXTREMES ----
@@ -2367,6 +2370,7 @@ def windowBevelGeometry():
                 if body.name == 'Exterior':
                     exterior_body = body
                     break
+            bbox = exterior_body.boundingBox
 
             # --- FILTER UNIQUE EDGES PARALLEL TO X AT TARGET Y ---
             seen = set()
@@ -2426,6 +2430,10 @@ def windowBevelGeometry():
                 chain.reverse = False
                 chain.startExtensionLength = in_mm(-.5)
                 chain.endExtensionLength = in_mm(-.5)
+                if edge.startVertex.geometry.x == bbox.minPoint.x:
+                    chain.startExtensionLength = in_mm(5)
+                if edge.endVertex.geometry.x == bbox.maxPoint.x:
+                    chain.endExtensionLength = in_mm(5)
                 chain.inputGeometry = [edge]
 
             contourParam.applyCurveSelections(curveSelections)
@@ -2434,303 +2442,815 @@ def windowBevelGeometry():
     except:
         ui.messageBox(f"windowBevelGeometry(): failed:\n{traceback.format_exc()}")
 
-def brickFeatureGeometry():
+def brickFeatureEMGeometry():
     try:
-        if idBrickDetail():
+        if not idBrickDetail():
+            return
 
-            # Find 'Exterior' body.
+        # --- Find Exterior body ---
+        exterior_body = None
+        for body in rootComp.bRepBodies:
+            if body.name == 'Exterior':
+                exterior_body = body
+                break
+        if not exterior_body:
+            ui.messageBox("Error: 'Exterior' body not found.")
+            return
+
+        # --- Collect bottom planar faces (thin in Y) ---
+        flat_faces = []
+        for face in exterior_body.faces:
+            bb = face.boundingBox
+            if abs(bb.maxPoint.y - bb.minPoint.y) < 0.002:
+                flat_faces.append(face)
+        if not flat_faces:
+            ui.messageBox("Error: No flat faces found on 'Exterior'.")
+            return
+
+        # --- Lowest Y bottom faces ---
+        TOLERANCE = 0.002
+        lowest_y = min(f.boundingBox.minPoint.y for f in flat_faces)
+        bottom_faces = [f for f in flat_faces if abs(f.boundingBox.minPoint.y - lowest_y) < TOLERANCE]
+        if not bottom_faces:
+            ui.messageBox("Error: No bottom faces at the lowest Y level.")
+            return
+
+        # --- CAM setup ---
+        ui.workspaces.itemById('CAMEnvironment').activate()
+        cam = adsk.cam.CAM.cast(app.activeProduct)
+        setup = cam.setups.itemByName('Charles')
+        if not setup:
+            ui.messageBox("Error: Setup 'Charles' not found.")
+            return
+
+        # Utility helpers
+        def vertex_key(v):
+            p = v.geometry
+            return (round(p.x, 6), round(p.y, 6), round(p.z, 6))
+        def edge_key(e):
+            v1 = vertex_key(e.startVertex)
+            v2 = vertex_key(e.endVertex)
+            return tuple(sorted([v1, v2]))
+        def chain_centroid(chain_edges):
+            seen = set()
+            xs, zs = [], []
+            for e in chain_edges:
+                for v in [e.startVertex, e.endVertex]:
+                    vk = vertex_key(v)
+                    if vk in seen:
+                        continue
+                    seen.add(vk)
+                    p = v.geometry
+                    xs.append(p.x)
+                    zs.append(p.z)
+            return (sum(xs) / len(xs), sum(zs) / len(zs)) if xs else (0.0, 0.0)
+
+        all_chain_infos = []
+        CONNECT_DIST = in_cm(0.51)  # 0.51" tolerance
+        import math
+        def dist(p1, p2):
+            dx = p1.x - p2.x
+            dy = p1.y - p2.y
+            dz = p1.z - p2.z
+            return math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        # --- For each bottom face, find matching target faces 0.5" above and collect matching edges ---
+        for bottom_face in bottom_faces:
+            ref_y = bottom_face.boundingBox.minPoint.y
+            target_y = ref_y + in_cm(0.5)
+
+            # collect faces at target_y that are planar thin in Y
+            target_faces = []
+            for f in exterior_body.faces:
+                bb = f.boundingBox
+                face_y = bb.minPoint.y
+                if abs(bb.maxPoint.y - bb.minPoint.y) < 0.002 and abs(face_y - target_y) < TOLERANCE:
+                    target_faces.append(f)
+            if not target_faces:
+                # skip if no target faces for this bottom_face
+                continue
+
+            # bottom edge endpoint data for tolerance matching
+            bottom_edges_info = []
+            for edge in bottom_face.edges:
+                v1 = edge.startVertex.geometry
+                v2 = edge.endVertex.geometry
+                bottom_edges_info.append(((v1.x, v1.y, v1.z), (v2.x, v2.y, v2.z), edge))
+
+            # find target edges that match bottom edges (XZ tolerance)
+            target_edges = []
+            for face in target_faces:
+                for edge in face.edges:
+                    v1 = edge.startVertex.geometry
+                    v2 = edge.endVertex.geometry
+                    if abs(v1.y - target_y) > TOLERANCE or abs(v2.y - target_y) > TOLERANCE:
+                        continue
+                    matched = False
+                    for b_v1_tup, b_v2_tup, b_edge in bottom_edges_info:
+                        class _P: pass
+                        bp1 = _P(); bp1.x, bp1.y, bp1.z = b_v1_tup
+                        bp2 = _P(); bp2.x, bp2.y, bp2.z = b_v2_tup
+                        d00 = math.hypot(v1.x - bp1.x, v1.z - bp1.z)
+                        d01 = math.hypot(v1.x - bp2.x, v1.z - bp2.z)
+                        d10 = math.hypot(v2.x - bp1.x, v2.z - bp1.z)
+                        d11 = math.hypot(v2.x - bp2.x, v2.z - bp2.z)
+                        if ((d00 < CONNECT_DIST and d11 < CONNECT_DIST) or (d01 < CONNECT_DIST and d10 < CONNECT_DIST)):
+                            matched = True
+                            break
+                    if matched:
+                        target_edges.append(edge)
+
+            if not target_edges:
+                continue
+
+            # group target_edges into connected chains using CONNECT_DIST
+            visited = set()
+            chains = []
+            for e in target_edges:
+                ek = edge_key(e)
+                if ek in visited:
+                    continue
+                stack = [e]
+                chain_edges = []
+                while stack:
+                    cur = stack.pop()
+                    cur_key = edge_key(cur)
+                    if cur_key in visited:
+                        continue
+                    visited.add(cur_key)
+                    chain_edges.append(cur)
+                    cur_v1 = cur.startVertex.geometry
+                    cur_v2 = cur.endVertex.geometry
+                    for nxt in target_edges:
+                        nk = edge_key(nxt)
+                        if nk in visited:
+                            continue
+                        n_v1 = nxt.startVertex.geometry
+                        n_v2 = nxt.endVertex.geometry
+                        if (dist(cur_v1, n_v1) < CONNECT_DIST or dist(cur_v1, n_v2) < CONNECT_DIST or
+                            dist(cur_v2, n_v1) < CONNECT_DIST or dist(cur_v2, n_v2) < CONNECT_DIST):
+                            stack.append(nxt)
+                if chain_edges:
+                    chains.append(chain_edges)
+
+            # compute centroid and sort chains clockwise for this bottom-face group
+            all_x, all_z = [], []
+            for e in target_edges:
+                for v in [e.startVertex, e.endVertex]:
+                    p = v.geometry
+                    all_x.append(p.x)
+                    all_z.append(p.z)
+            if not all_x:
+                continue
+            xmin, xmax = min(all_x), max(all_x)
+            zmin, zmax = min(all_z), max(all_z)
+            xmid = (xmin + xmax) / 2.0
+            zmid = (zmin + zmax) / 2.0
+            start_x = xmax
+            start_z = zmin
+            start_angle = math.atan2(start_z - zmid, start_x - xmid)
+
+            local_chain_infos = []
+            for chain_edges in chains:
+                cx, cz = chain_centroid(chain_edges)
+                angle = math.atan2(cz - zmid, cx - xmid)
+                delta = (start_angle - angle + 2.0 * math.pi) % (2.0 * math.pi)
+                local_chain_infos.append((delta, chain_edges, cx, cz, angle))
+            local_chain_infos.sort(key=lambda t: t[0])
+            all_chain_infos.extend(local_chain_infos)
+
+        # --- APPLY ONLY TO 'Brick Feature EM' ---
+        op = setup.operations.itemByName('Brick Feature EM')
+        if not op:
+            ui.messageBox("Operation 'Brick Feature EM' not found.")
+            return
+
+        try:
+            contourParam = op.parameters.itemByName('contours').value
+        except:
+            ui.messageBox("Operation 'Brick Feature EM' does not have 'contours' parameter.")
+            return
+
+        curveSelections = contourParam.getCurveSelections()
+        curveSelections.clear()
+
+        added_chains = 0
+        # apply only chains that have 2 or more edges
+        for _, chain_edges, _, _, _ in all_chain_infos:
+            if len(chain_edges) < 2:
+                continue
+            chain = curveSelections.createNewChainSelection()
+            try:
+                chain.isOpenAllowed = True
+            except:
+                pass
+            chain.isOpen = True
+            chain.startExtensionLength = in_mm(5.0)
+            chain.endExtensionLength = in_mm(5.0)
+            # assign python list of edges (API expects a std::vector equivalent)
+            chain.inputGeometry = [e for e in chain_edges]
+            added_chains += 1
+
+        if added_chains == 0:
+            # delete the operation if no valid chains were added
+            op.deleteMe()
+            #ui.messageBox("No valid chains (2+ edges). 'Brick Feature EM' operation deleted.")
+            return
+
+        contourParam.applyCurveSelections(curveSelections)
+        cam.generateToolpath(op)
+
+    except:
+        ui.messageBox(f"brickFeatureEMGeometry(): failed:\n{traceback.format_exc()}")
+
+def brickFeatureFMGeometry():
+    try:
+        if not idBrickDetail():
+            return
+
+        # --- Find 'Exterior' body ---
+        exterior_body = None
+        for body in rootComp.bRepBodies:
+            if body.name == 'Exterior':
+                exterior_body = body
+                break
+        if not exterior_body:
+            ui.messageBox("Error: 'Exterior' body not found.")
+            return
+
+        # --- Collect flat faces (thin in Y) ---
+        flat_faces = [f for f in exterior_body.faces if abs(f.boundingBox.maxPoint.y - f.boundingBox.minPoint.y) < 0.002]
+        if not flat_faces:
+            ui.messageBox("Error: No flat faces found on 'Exterior'.")
+            return
+
+        # --- Find lowest Y level ---
+        TOLERANCE = 0.002
+        lowest_y = min(f.boundingBox.minPoint.y for f in flat_faces)
+        bottom_faces = [f for f in flat_faces if abs(f.boundingBox.minPoint.y - lowest_y) < TOLERANCE]
+        if not bottom_faces:
+            ui.messageBox("Error: No bottom faces at lowest Y level.")
+            return
+
+        # --- Activate CAM environment ---
+        ui.workspaces.itemById('CAMEnvironment').activate()
+        cam = adsk.cam.CAM.cast(app.activeProduct)
+        setup = cam.setups.itemByName('Charles')
+        if not setup:
+            ui.messageBox("Error: Setup 'Charles' not found.")
+            return
+
+        # --- Helper functions ---
+        def vertex_key(v):
+            p = v.geometry
+            return (round(p.x, 6), round(p.y, 6), round(p.z, 6))
+
+        def edge_key(e):
+            v1 = vertex_key(e.startVertex)
+            v2 = vertex_key(e.endVertex)
+            return tuple(sorted([v1, v2]))
+
+        def chain_centroid(chain_edges):
+            seen = set()
+            xs, zs = [], []
+            for e in chain_edges:
+                for v in [e.startVertex, e.endVertex]:
+                    vk = vertex_key(v)
+                    if vk in seen:
+                        continue
+                    seen.add(vk)
+                    p = v.geometry
+                    xs.append(p.x)
+                    zs.append(p.z)
+            return (sum(xs) / len(xs), sum(zs) / len(zs)) if xs else (0.0, 0.0)
+
+        CONNECT_DIST = in_cm(0.51)
+
+        def dist(p1, p2):
+            dx, dy, dz = p1.x - p2.x, p1.y - p2.y, p1.z - p2.z
+            return math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        all_chain_infos = []
+
+        # --- For each bottom face ---
+        for bottom_face in bottom_faces:
+            ref_y = bottom_face.boundingBox.minPoint.y
+            offset = in_cm(0.5)
+            target_y = ref_y + offset
+
+            # Find faces at target_y
+            target_faces = []
+            for f in exterior_body.faces:
+                bb = f.boundingBox
+                face_y = bb.minPoint.y
+                if abs(bb.maxPoint.y - bb.minPoint.y) < 0.002 and abs(face_y - target_y) < TOLERANCE:
+                    target_faces.append(f)
+
+            if not target_faces:
+                continue
+
+            # --- Collect bottom edges ---
+            bottom_edges_info = []
+            for edge in bottom_face.edges:
+                v1, v2 = edge.startVertex.geometry, edge.endVertex.geometry
+                bottom_edges_info.append(((v1.x, v1.y, v1.z), (v2.x, v2.y, v2.z), edge))
+
+            # --- Match target edges to bottom edges ---
+            target_edges = []
+            for face in target_faces:
+                for edge in face.edges:
+                    v1, v2 = edge.startVertex.geometry, edge.endVertex.geometry
+                    if abs(v1.y - target_y) > TOLERANCE or abs(v2.y - target_y) > TOLERANCE:
+                        continue
+                    for b_v1_tup, b_v2_tup, b_edge in bottom_edges_info:
+                        class _P: pass
+                        bp1 = _P(); bp1.x, bp1.y, bp1.z = b_v1_tup
+                        bp2 = _P(); bp2.x, bp2.y, bp2.z = b_v2_tup
+                        d00 = math.hypot(v1.x - bp1.x, v1.z - bp1.z)
+                        d01 = math.hypot(v1.x - bp2.x, v1.z - bp2.z)
+                        d10 = math.hypot(v2.x - bp1.x, v2.z - bp1.z)
+                        d11 = math.hypot(v2.x - bp2.x, v2.z - bp2.z)
+                        if ((d00 < CONNECT_DIST and d11 < CONNECT_DIST) or
+                            (d01 < CONNECT_DIST and d10 < CONNECT_DIST)):
+                            target_edges.append(edge)
+                            break
+
+            if not target_edges:
+                continue
+
+            # --- Group connected edges ---
+            visited = set()
+            chains = []
+            for e in target_edges:
+                ek = edge_key(e)
+                if ek in visited:
+                    continue
+                stack = [e]
+                chain_edges = []
+                while stack:
+                    cur = stack.pop()
+                    cur_key = edge_key(cur)
+                    if cur_key in visited:
+                        continue
+                    visited.add(cur_key)
+                    chain_edges.append(cur)
+                    cur_v1, cur_v2 = cur.startVertex.geometry, cur.endVertex.geometry
+                    for nxt in target_edges:
+                        nk = edge_key(nxt)
+                        if nk in visited:
+                            continue
+                        n_v1, n_v2 = nxt.startVertex.geometry, nxt.endVertex.geometry
+                        if (dist(cur_v1, n_v1) < CONNECT_DIST or
+                            dist(cur_v1, n_v2) < CONNECT_DIST or
+                            dist(cur_v2, n_v1) < CONNECT_DIST or
+                            dist(cur_v2, n_v2) < CONNECT_DIST):
+                            stack.append(nxt)
+                if chain_edges:
+                    chains.append(chain_edges)
+
+            # --- Sort chains around centroid for consistency ---
+            all_x = [v.geometry.x for e in target_edges for v in [e.startVertex, e.endVertex]]
+            all_z = [v.geometry.z for e in target_edges for v in [e.startVertex, e.endVertex]]
+            xmin, xmax, zmin, zmax = min(all_x), max(all_x), min(all_z), max(all_z)
+            xmid, zmid = (xmin + xmax) / 2.0, (zmin + zmax) / 2.0
+            start_angle = math.atan2(zmin - zmid, xmax - xmid)
+            for chain_edges in chains:
+                cx, cz = chain_centroid(chain_edges)
+                angle = math.atan2(cz - zmid, cx - xmid)
+                delta = (start_angle - angle + 2.0 * math.pi) % (2.0 * math.pi)
+                all_chain_infos.append((delta, chain_edges))
+
+        if not all_chain_infos:
+            return
+
+        # --- Apply all chains to 'Brick Feature FM' operation ---
+        op = setup.operations.itemByName('Brick Feature FM')
+        if not op:
+            ui.messageBox("Error: Operation 'Brick Feature FM' not found.")
+            return
+
+        contourParam = op.parameters.itemByName('contours').value
+        curveSelections = contourParam.getCurveSelections()
+        curveSelections.clear()
+
+        all_chain_infos.sort(key=lambda t: t[0])
+
+        for _, chain_edges in all_chain_infos:
+            chain = curveSelections.createNewChainSelection()
+            chain.isOpen = True
+            chain.startExtensionLength = in_mm(5.0)
+            chain.endExtensionLength = in_mm(5.0)
+            chain.inputGeometry = [e for e in chain_edges]
+
+        contourParam.applyCurveSelections(curveSelections)
+        cam.generateToolpath(op)
+
+    except:
+        ui.messageBox(f"brickFeatureFMGeometry(): failed:\n{traceback.format_exc()}")
+
+def bumpCleanUpGeometry():
+    try:
+        if eastBump == True:
+            # ---- CONFIG ----
+            BODY_NAME = "Exterior"
+            SETUP_NAME = "Charles"
+            OP_NAME = "Bump Clean Up FM"
+            COORD_TOL = 1e-4
+
+            # ---- GET DESIGN ----
+            ui.workspaces.itemById("FusionSolidEnvironment").activate()
+            design = adsk.fusion.Design.cast(app.activeProduct)
+            rootComp = design.rootComponent
+
+            # ---- GET BODY ----
+            body = None
+            for b in rootComp.bRepBodies:
+                if b.name == BODY_NAME:
+                    body = b
+                    break
+            if not body:
+                ui.messageBox(f"Body '{BODY_NAME}' not found.")
+                return
+
+            # ---- FIND EXTREMES ----
+            xmax = max(v.geometry.x for v in body.vertices)
+            ymin = min(v.geometry.y for v in body.vertices)
+
+            # ---- FIND EDGE ----
+            target_edge = None
+            for face in body.faces:
+                for edge in face.edges:
+                    p1 = edge.startVertex.geometry
+                    p2 = edge.endVertex.geometry
+                    if (abs(p1.x - xmax) < COORD_TOL and abs(p2.x - xmax) < COORD_TOL and
+                        abs(p1.y - ymin) < COORD_TOL and abs(p2.y - ymin) < COORD_TOL):
+                        target_edge = edge
+                        break
+                if target_edge:
+                    break
+
+            if not target_edge:
+                ui.messageBox("No edge found with both vertices on X max and Y min.")
+                return
+
+            # ---- GET CAM SETUP AND OP ----
+            doc = app.activeDocument
+            cam_product = doc.products.itemByProductType('CAMProductType')
+            cam = adsk.cam.CAM.cast(cam_product)
+            ui.workspaces.itemById("CAMEnvironment").activate()
+
+            setup = cam.setups.itemByName(SETUP_NAME)
+            if not setup:
+                ui.messageBox(f"Setup '{SETUP_NAME}' not found.")
+                return
+
+            op = setup.operations.itemByName(OP_NAME)
+            if not op:
+                ui.messageBox(f"Operation '{OP_NAME}' not found.")
+                return
+
+            # ---- GET CHAIN PARAMETER ----
+            contourParam = None
+            for pname in ['curves', 'contours']:
+                param = op.parameters.itemByName(pname)
+                if param:
+                    try:
+                        contourParam = param.value
+                        break
+                    except:
+                        pass
+            if not contourParam:
+                for attr in ['contourParameters', 'chainCurves']:
+                    try:
+                        contourParam = getattr(op, attr)
+                        if contourParam:
+                            break
+                    except:
+                        pass
+            if not contourParam:
+                ui.messageBox(f"Could not find chain parameter for '{OP_NAME}'.")
+                return
+
+            # ---- APPLY EDGE TO OPERATION ----
+            try:
+                curveSelections = contourParam.getCurveSelections()
+            except:
+                curveSelections = contourParam
+
+            curveSelections.clear()
+            chain = curveSelections.createNewChainSelection()
+            chain.isOpen = True
+            chain.reverse = False
+            chain.startExtensionLength = in_mm(5.0)
+            chain.endExtensionLength = in_mm(5.0)
+            chain.inputGeometry = [target_edge]
+            contourParam.applyCurveSelections(curveSelections)
+            cam.generateToolpath(op)
+            
+    except:
+        ui.messageBox(f"bumpCleanUpGeometry(): failed:\n{traceback.format_exc()}")
+
+def eastReturnEMGeometry():
+    try:
+        if east_return_result == adsk.core.DialogResults.DialogYes:
+            COORD_TOL = 1e-4
+            OFFSET_TOL = in_cm(0.51)  # 0.5 inch tolerance in cm
+
+            # --- Find 'Exterior' body ---
+            exterior_body = None
+            for body in rootComp.bRepBodies:
+                if body.name == "Exterior":
+                    exterior_body = body
+                    break
+            if not exterior_body:
+                ui.messageBox("Error: 'Exterior' body not found.")
+                return
+
+            # --- Determine max X ---
+            all_x = [v.geometry.x for v in exterior_body.vertices]
+            max_x = max(all_x)
+
+            # --- Step 1: Collect edges where BOTH vertices are within 0.5in of max X ---
+            edges_near_xmax = []
+            for edge in exterior_body.edges:
+                v1 = edge.startVertex.geometry
+                v2 = edge.endVertex.geometry
+                if abs(v1.x - max_x) <= OFFSET_TOL and abs(v2.x - max_x) <= OFFSET_TOL:
+                    edges_near_xmax.append(edge)
+
+            if not edges_near_xmax:
+                ui.messageBox("No edges found within 0.5in of max X.")
+                return
+
+            # --- Step 2: Compute Y/Z extrema from those edges ---
+            all_y = []
+            all_z = []
+            for e in edges_near_xmax:
+                for v in [e.startVertex.geometry, e.endVertex.geometry]:
+                    all_y.append(v.y)
+                    all_z.append(v.z)
+
+            y_max = max(all_y)
+            z_max = max(all_z)
+            z_min = min(all_z)
+
+            # --- Step 3: Filter for edges fully on Zmax, Zmin, or Ymax ---
+            selected_edges = []
+            seen = set()
+
+            def edge_key(e):
+                v1, v2 = e.startVertex.geometry, e.endVertex.geometry
+                return tuple(sorted([
+                    (round(v1.x,5), round(v1.y,5), round(v1.z,5)),
+                    (round(v2.x,5), round(v2.y,5), round(v2.z,5))
+                ]))
+
+            for e in edges_near_xmax:
+                v1 = e.startVertex.geometry
+                v2 = e.endVertex.geometry
+
+                # skip if both vertices are at y-min of entire body
+                body_ymin = min(v.geometry.y for v in exterior_body.vertices)
+                if abs(v1.y - body_ymin) < COORD_TOL and abs(v2.y - body_ymin) < COORD_TOL:
+                    continue
+
+                if (
+                    (abs(v1.z - z_max) < COORD_TOL and abs(v2.z - z_max) < COORD_TOL)
+                    or (abs(v1.z - z_min) < COORD_TOL and abs(v2.z - z_min) < COORD_TOL)
+                    or (abs(v1.y - y_max) < COORD_TOL and abs(v2.y - y_max) < COORD_TOL)
+                ):
+                    k = edge_key(e)
+                    if k not in seen:
+                        seen.add(k)
+                        selected_edges.append(e)
+
+            if not selected_edges:
+                ui.messageBox("No edges found for Return EM (after filtering).")
+                return
+
+            # --- Step 4: Apply to CAM operation ---
+            ui.workspaces.itemById("CAMEnvironment").activate()
+            cam = adsk.cam.CAM.cast(app.activeProduct)
+            setup = cam.setups.itemByName("Charles")
+            if not setup:
+                ui.messageBox("Setup 'Charles' not found.")
+                return
+
+            op = setup.operations.itemByName("Return EM")
+            if not op:
+                ui.messageBox("Operation 'Return EM' not found.")
+                return
+
+            contourParam = op.parameters.itemByName("contours").value
+            curveSelections = contourParam.getCurveSelections()
+            curveSelections.clear()
+
+            chain = curveSelections.createNewChainSelection()
+            chain.isOpen = True
+            chain.reverse = False
+            chain.startExtensionLength = in_mm(3.0)
+            chain.endExtensionLength = in_mm(3.0)
+            chain.inputGeometry = selected_edges
+
+            contourParam.applyCurveSelections(curveSelections)
+            cam.generateToolpath(op)
+
+    except:
+        ui.messageBox(f"eastReturnGeometry(): failed:\n{traceback.format_exc()}")
+
+def eastReturnGeometry():
+    try:
+        if east_return_result == adsk.core.DialogResults.DialogYes:
+            # --- CONFIG ---
+            OFFSET_IN = 0.5
+            COORD_TOL = 1e-4
+
+            offset = in_cm(OFFSET_IN)
+
+            # --- FIND BODY ---
             exterior_body = None
             for body in rootComp.bRepBodies:
                 if body.name == 'Exterior':
                     exterior_body = body
                     break
 
-            # --- Find all flat faces on bottom ---
-            flat_faces = []
-            for face in exterior_body.faces:
-                bb = face.boundingBox
-                if abs(bb.maxPoint.y - bb.minPoint.y) < 0.002:
-                    flat_faces.append(face)
+            # --- FIND PLANAR FACES PARALLEL TO YZ (normal ±X) ---
+            max_x = max(v.geometry.x for v in exterior_body.vertices)
+            target_faces = []
 
-            if not flat_faces:
-                ui.messageBox("Error: No flat faces found on 'Exterior'.")
+            for face in exterior_body.faces:
+                geom = face.geometry
+                if not isinstance(geom, adsk.core.Plane):
+                    continue
+
+                evaluator = face.evaluator
+                param = adsk.core.Point2D.create(0.5, 0.5)
+                success, normal_vec = evaluator.getNormalAtParameter(param)
+                if not success:
+                    continue
+
+                # Ensure normal is mostly ±X (parallel to YZ)
+                if abs(normal_vec.x) < 0.999:
+                    continue
+
+                face_x = face.boundingBox.maxPoint.x
+                if abs(face_x - max_x) < COORD_TOL or abs(face_x - (max_x - offset)) < COORD_TOL:
+                    target_faces.append(face)
+
+            if not target_faces:
+                ui.messageBox("No faces found parallel to YZ at max X or 0.5in behind.")
                 return
 
-            # --- Find the lowest Y level ---
-            lowest_y = min(f.boundingBox.minPoint.y for f in flat_faces)
-            TOLERANCE = 0.002
+            # --- SWITCH TO CAM WORKSPACE ---
+            ui.workspaces.itemById("CAMEnvironment").activate()
 
-            # --- Get all bottom faces at the same Y level ---
-            bottom_faces = [f for f in flat_faces if abs(f.boundingBox.minPoint.y - lowest_y) < TOLERANCE]
-
-            ui.workspaces.itemById('CAMEnvironment').activate()
-            cam = adsk.cam.CAM.cast(app.activeProduct)
+            # --- GET CAM SETUP AND OP ---
+            doc = app.activeDocument
+            cam_product = doc.products.itemByProductType('CAMProductType')
+            cam = adsk.cam.CAM.cast(cam_product)
             setup = cam.setups.itemByName('Charles')
+            op = setup.operations.itemByName('Return FM')
 
-            # --- Utility functions ---
-            def vertex_key(v):
-                p = v.geometry
-                return (round(p.x, 6), round(p.y, 6), round(p.z, 6))
+            # --- GET FACE PARAMETER ---
+            contourParam: adsk.cam.CadContours2dParameterValue = op.parameters.itemByName('stockContours').value
+            curveSelections = contourParam.getCurveSelections()
+            curveSelections.clear()
 
-            def edge_key(e):
-                v1 = vertex_key(e.startVertex)
-                v2 = vertex_key(e.endVertex)
-                return tuple(sorted([v1, v2]))
+            # --- CREATE FACE SELECTIONS ---
+            new_selection_list = adsk.core.ObjectCollection.create()
+            for face in target_faces:
+                fc: adsk.cam.FaceContourSelection = curveSelections.createNewFaceContourSelection()
+                fc.loopType = adsk.cam.LoopTypes.AllLoops
+                fc.sideType = adsk.cam.SideTypes.StartOutsideSideType
+                fc.inputGeometry = [face]
+                new_selection_list.add(fc)
 
-            def chain_centroid(chain_edges):
-                seen = set()
-                xs, zs = [], []
-                for e in chain_edges:
-                    for v in [e.startVertex, e.endVertex]:
-                        vk = vertex_key(v)
-                        if vk in seen:
-                            continue
-                        seen.add(vk)
-                        p = v.geometry
-                        xs.append(p.x)
-                        zs.append(p.z)
-                return (sum(xs) / len(xs), sum(zs) / len(zs)) if xs else (0.0, 0.0)
-
-            all_chain_infos = []
-
-            # --- Process each bottom face independently ---
-            for bottom_face in bottom_faces:
-                ref_y = bottom_face.boundingBox.minPoint.y
-                offset = in_cm(0.5)
-                target_y = ref_y + offset
-
-                # Collect target faces
-                target_faces = []
-                for f in exterior_body.faces:
-                    bb = f.boundingBox
-                    face_y = bb.minPoint.y
-                    if abs(bb.maxPoint.y - bb.minPoint.y) < 0.002 and abs(face_y - target_y) < TOLERANCE:
-                        target_faces.append(f)
-
-                if not target_faces:
-                    ui.messageBox(f"No target faces found for bottom face at Y={ref_y:.3f}")
-                    continue
-
-                # Collect bottom edges as reference
-                bottom_edge_set = set()
-                for edge in bottom_face.edges:
-                    v1, v2 = edge.startVertex.geometry, edge.endVertex.geometry
-                    coords = sorted([
-                        (round(v1.x, 6), round(v1.z, 6)),
-                        (round(v2.x, 6), round(v2.z, 6))
-                    ])
-                    bottom_edge_set.add(coords[0] + coords[1])
-
-                # Match edges on target faces
-                target_edges = []
-                for face in target_faces:
-                    for edge in face.edges:
-                        v1 = edge.startVertex.geometry
-                        v2 = edge.endVertex.geometry
-                        if abs(v1.y - target_y) > TOLERANCE or abs(v2.y - target_y) > TOLERANCE:
-                            continue
-                        coords = sorted([
-                            (round(v1.x, 6), round(v1.z, 6)),
-                            (round(v2.x, 6), round(v2.z, 6))
-                        ])
-                        candidate_hash = coords[0] + coords[1]
-                        if candidate_hash in bottom_edge_set:
-                            target_edges.append(edge)
-
-                if not target_edges:
-                    ui.messageBox(f"No matching edges for bottom face at Y={ref_y:.3f}")
-                    continue
-
-                # Group by connectivity
-                vertex_to_edges = {}
-                for e in target_edges:
-                    v1 = vertex_key(e.startVertex)
-                    v2 = vertex_key(e.endVertex)
-                    vertex_to_edges.setdefault(v1, []).append(e)
-                    vertex_to_edges.setdefault(v2, []).append(e)
-
-                visited = set()
-                chains = []
-
-                for e in target_edges:
-                    ek = edge_key(e)
-                    if ek in visited:
-                        continue
-                    stack = [e]
-                    chain_edges = []
-                    while stack:
-                        cur = stack.pop()
-                        cur_key = edge_key(cur)
-                        if cur_key in visited:
-                            continue
-                        visited.add(cur_key)
-                        chain_edges.append(cur)
-                        v1 = vertex_key(cur.startVertex)
-                        v2 = vertex_key(cur.endVertex)
-                        for nxt in vertex_to_edges.get(v1, []) + vertex_to_edges.get(v2, []):
-                            if edge_key(nxt) not in visited:
-                                stack.append(nxt)
-                    if chain_edges:
-                        chains.append(chain_edges)
-
-                # Compute local center and sort clockwise
-                all_x = []
-                all_z = []
-                for e in target_edges:
-                    for v in [e.startVertex, e.endVertex]:
-                        p = v.geometry
-                        all_x.append(p.x)
-                        all_z.append(p.z)
-                xmin, xmax = min(all_x), max(all_x)
-                zmin, zmax = min(all_z), max(all_z)
-                xmid = (xmin + xmax) / 2.0
-                zmid = (zmin + zmax) / 2.0
-
-                start_x = xmax
-                start_z = zmin
-                start_angle = math.atan2(start_z - zmid, start_x - xmid)
-
-                local_chain_infos = []
-                for chain_edges in chains:
-                    cx, cz = chain_centroid(chain_edges)
-                    angle = math.atan2(cz - zmid, cx - xmid)
-                    delta = (start_angle - angle + 2.0 * math.pi) % (2.0 * math.pi)
-                    local_chain_infos.append((delta, chain_edges, cx, cz, angle))
-
-                local_chain_infos.sort(key=lambda t: t[0])
-                all_chain_infos.extend(local_chain_infos)
-
-            # --- Apply to both operations ---
-            def apply_chains_to_operation(operation_name):
-                op = setup.operations.itemByName(operation_name)
-                if not op:
-                    ui.messageBox(f"Error: Operation '{operation_name}' not found.")
-                    return
-
-                contourParam = op.parameters.itemByName('contours').value
-                curveSelections = contourParam.getCurveSelections()
-
-                for i, info in enumerate(all_chain_infos):
-                    _, chain_edges, _, _, _ = info
-                    chain = curveSelections.createNewChainSelection()
-                    try:
-                        chain.isOpenAllowed = True
-                    except:
-                        pass
-                    chain.isOpen = True
-                    chain.startExtensionLength = in_mm(5.0)
-                    chain.endExtensionLength = in_mm(5.0)
-                    chain.inputGeometry = chain_edges
-
-                contourParam.applyCurveSelections(curveSelections)
-                cam.generateToolpath(op)
-
-            apply_chains_to_operation('Brick Feature EM')
-            apply_chains_to_operation('Brick Feature FM')
-            
+            curveSelections.curveSelections = new_selection_list
+            contourParam.applyCurveSelections(curveSelections)
+            cam.generateToolpath(op)
+         
     except:
-        ui.messageBox(f"brickFeatureGeometry(): failed:\n{traceback.format_exc()}")
+        ui.messageBox(f"eastReturnGeometry(): failed:\n{traceback.format_exc()}")
 
-def bumpCleanUpGeometry():
+def returnBrickGeometry():
     try:
-         # ---- CONFIG ----
-        BODY_NAME = "Exterior"
-        SETUP_NAME = "Charles"
-        OP_NAME = "Bump Clean Up FM"
-        COORD_TOL = 1e-4
+        # --- Run only if one of them is true ---
+        if not (idEastReturnBrickDetail() or idWestReturnBrickDetail()):
+            #ui.messageBox("No return brick detail active.")
+            return
 
-        # ---- GET DESIGN ----
+        # --- Switch to Fusion workspace ---
         ui.workspaces.itemById("FusionSolidEnvironment").activate()
         design = adsk.fusion.Design.cast(app.activeProduct)
         rootComp = design.rootComponent
+        COORD_TOL = 1e-4
 
-        # ---- GET BODY ----
-        body = None
-        for b in rootComp.bRepBodies:
-            if b.name == BODY_NAME:
-                body = b
+        # --- FIND BODY ---
+        exterior_body = None
+        for body in rootComp.bRepBodies:
+            if body.name == "Exterior":
+                exterior_body = body
                 break
-        if not body:
-            ui.messageBox(f"Body '{BODY_NAME}' not found.")
+        if not exterior_body:
+            ui.messageBox("No 'Exterior' body found.")
             return
 
-        # ---- FIND EXTREMES ----
-        xmax = max(v.geometry.x for v in body.vertices)
-        ymin = min(v.geometry.y for v in body.vertices)
+        # --- Determine whether we’re doing East or West ---
+        find_max_x = idEastReturnBrickDetail
+        find_min_x = idWestReturnBrickDetail
 
-        # ---- FIND EDGE ----
-        target_edge = None
-        for face in body.faces:
-            for edge in face.edges:
-                p1 = edge.startVertex.geometry
-                p2 = edge.endVertex.geometry
-                if (abs(p1.x - xmax) < COORD_TOL and abs(p2.x - xmax) < COORD_TOL and
-                    abs(p1.y - ymin) < COORD_TOL and abs(p2.y - ymin) < COORD_TOL):
-                    target_edge = edge
-                    break
-            if target_edge:
+        all_x = [v.geometry.x for v in exterior_body.vertices]
+        target_x = max(all_x) if find_max_x else min(all_x)
+
+        # --- FIND TARGET FACE (parallel to YZ plane, at target X) ---
+        target_face = None
+        for face in exterior_body.faces:
+            geom = face.geometry
+            if not isinstance(geom, adsk.core.Plane):
+                continue
+
+            evaluator = face.evaluator
+            param = adsk.core.Point2D.create(0.5, 0.5)
+            success, normal_vec = evaluator.getNormalAtParameter(param)
+            if not success:
+                continue
+
+            # We only want faces roughly parallel to YZ (normal ±X)
+            if abs(normal_vec.x) < 0.999:
+                continue
+
+            face_x = (
+                face.boundingBox.maxPoint.x if find_max_x else face.boundingBox.minPoint.x
+            )
+            if abs(face_x - target_x) < COORD_TOL:
+                target_face = face
                 break
 
-        if not target_edge:
-            ui.messageBox("No edge found with both vertices on X max and Y min.")
+        if not target_face:
+            ui.messageBox(
+                f"No face found at {'max' if find_max_x else 'min'} X ({target_x:.3f})."
+            )
             return
 
-        # ---- GET CAM SETUP AND OP ----
-        doc = app.activeDocument
-        cam_product = doc.products.itemByProductType('CAMProductType')
-        cam = adsk.cam.CAM.cast(cam_product)
+        # --- FIND Y-ORIENTED EDGES ON THAT FACE ---
+        y_edges = []
+        for edge in target_face.edges:
+            sv = edge.startVertex.geometry
+            ev = edge.endVertex.geometry
+            dx = abs(ev.x - sv.x)
+            dy = abs(ev.y - sv.y)
+            dz = abs(ev.z - sv.z)
+            if dy > dx and dy > dz:
+                y_edges.append(edge)
+
+        if len(y_edges) < 2:
+            ui.messageBox(
+                f"Found only {len(y_edges)} Y-oriented edges on target face at X={target_x:.3f}."
+            )
+            return
+
+        # --- SWITCH TO CAM WORKSPACE ---
         ui.workspaces.itemById("CAMEnvironment").activate()
 
-        setup = cam.setups.itemByName(SETUP_NAME)
+        # --- GET SETUP AND OP ---
+        doc = app.activeDocument
+        cam_product = doc.products.itemByProductType("CAMProductType")
+        cam = adsk.cam.CAM.cast(cam_product)
+        setup = cam.setups.itemByName("Charles")
         if not setup:
-            ui.messageBox(f"Setup '{SETUP_NAME}' not found.")
+            ui.messageBox("Setup 'Charles' not found.")
             return
 
-        op = setup.operations.itemByName(OP_NAME)
+        op = setup.operations.itemByName("Return Brick FM")
         if not op:
-            ui.messageBox(f"Operation '{OP_NAME}' not found.")
+            ui.messageBox("Operation 'Return Brick FM' not found.")
             return
 
-        # ---- GET CHAIN PARAMETER ----
-        contourParam = None
-        for pname in ['curves', 'contours']:
-            param = op.parameters.itemByName(pname)
-            if param:
-                try:
-                    contourParam = param.value
-                    break
-                except:
-                    pass
-        if not contourParam:
-            for attr in ['contourParameters', 'chainCurves']:
-                try:
-                    contourParam = getattr(op, attr)
-                    if contourParam:
-                        break
-                except:
-                    pass
-        if not contourParam:
-            ui.messageBox(f"Could not find chain parameter for '{OP_NAME}'.")
-            return
+        # --- APPLY CHAINS ---
+        contourParam: adsk.cam.CadContours2dParameterValue = op.parameters.itemByName(
+            "contours"
+        ).value
 
-        # ---- APPLY EDGE TO OPERATION ----
         try:
             curveSelections = contourParam.getCurveSelections()
         except:
             curveSelections = contourParam
 
         curveSelections.clear()
-        chain = curveSelections.createNewChainSelection()
-        chain.isOpen = True
-        chain.reverse = False
-        chain.startExtensionLength = in_mm(5.0)
-        chain.endExtensionLength = in_mm(5.0)
-        chain.inputGeometry = [target_edge]
+
+        for edge in y_edges[:2]:  # Only use two Y-axis edges
+            chain = curveSelections.createNewChainSelection()
+            chain.isOpen = True
+            chain.reverse = False
+            chain.startExtensionLength = in_mm(5.0)
+            chain.endExtensionLength = in_mm(5.0)
+            chain.inputGeometry = [edge]
+
         contourParam.applyCurveSelections(curveSelections)
-        cam.generateToolpath(op)  # comment out for testing
-            
+        cam.generateToolpath(op)
+
     except:
-        ui.messageBox(f"bumpCleanUpGeometry(): failed:\n{traceback.format_exc()}")
+        ui.messageBox(f"returnBrickGeometry(): failed:\n{traceback.format_exc()}")
 
 def showBodies():
     try:
