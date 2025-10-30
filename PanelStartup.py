@@ -55,7 +55,7 @@ def run(context):
     showBodies()                # Makes bodies visible and ready for geometry selection.
     melvinGeometry()            # Selects the edges for the Melvin Perimeter and generates the toolpath.
     facingheadGeometry()        # Selects the top face(s) for the facing operation and generates the toolpath.
-    perimeterGeometry()         # Selects the geometry for the  'Perimeter Ballnose EM' operation and generates it's toolpath.
+    perimeterGeometry()         # Selects the geometry for the  'Perimeter Ball nose EM' operation and generates it's toolpath.
     aboveSheathingGeometry()    # Selects the geometry for the  'Perimeter Above Sheathing' operation and generates it's toolpath.
     windowBevelGeometry()       # Selects the window bevel edge(s) and generates the toolpath.
     brickFeatureEMGeometry()
@@ -63,7 +63,10 @@ def run(context):
     bumpCleanUpGeometry()       # Selects edges for the east bump clean up operation and generates its toolpaths.
     eastReturnEMGeometry()       # Selects faces for the east return End mill operation and generates its toolpath.
     eastReturnGeometry()        # Selects faces for the east return face operation and generates its toolpath.
-    returnBrickGeometry()
+    eastReturnBrickGeometry()
+    westReturnEMGeometry()
+    westReturnGeometry()
+    westReturnBrickGeometry()
     errorDetection()            # Compares 'Frame' and 'Sheathing' and 'Foam' and 'Sheathing' to detect errors from Revit export.
     scriptSummary()             # Displays a summary at the end of the script.
 
@@ -791,8 +794,6 @@ def idWindows():
             if v1.z > min_z and v1.z < window_z_bottom_cm:
                 #ui.messageBox(f"Edge: v1.z = {(v1.z / 2.54)}, v2.z = {(v2.z / 2.54)}")
                 windows = True
-            
-        ui.messageBox(f"Window: X min = {(min_x / 2.54)} \n X max = {(max_x / 2.54)} \n Z = {(min_z / 2.54)}")
 
     except:
         ui.messageBox('idWindows() Failed:\n{}'.format(traceback.format_exc()))
@@ -3132,7 +3133,7 @@ def eastReturnGeometry():
     except:
         ui.messageBox(f"eastReturnGeometry(): failed:\n{traceback.format_exc()}")
 
-def returnBrickGeometry():
+def eastReturnBrickGeometry():
     try:
         # --- Run only if one of them is true ---
         if not (idEastReturnBrickDetail() or idWestReturnBrickDetail()):
@@ -3250,7 +3251,308 @@ def returnBrickGeometry():
         cam.generateToolpath(op)
 
     except:
-        ui.messageBox(f"returnBrickGeometry(): failed:\n{traceback.format_exc()}")
+        ui.messageBox(f"eastReturnBrickGeometry(): failed:\n{traceback.format_exc()}")
+
+def westReturnEMGeometry():
+    try:
+        if west_return_result == adsk.core.DialogResults.DialogYes:
+            COORD_TOL = 1e-4
+            OFFSET_TOL = in_cm(0.51)  # 0.5 inch tolerance in cm
+
+            # --- Find 'Exterior' body ---
+            exterior_body = None
+            for body in rootComp.bRepBodies:
+                if body.name == "Exterior":
+                    exterior_body = body
+                    break
+            if not exterior_body:
+                ui.messageBox("Error: 'Exterior' body not found.")
+                return
+
+            # --- Determine min X ---
+            all_x = [v.geometry.x for v in exterior_body.vertices]
+            min_x = min(all_x)
+
+            # --- Step 1: Collect edges where BOTH vertices are within 0.5in of min X ---
+            edges_near_xmin = []
+            for edge in exterior_body.edges:
+                v1 = edge.startVertex.geometry
+                v2 = edge.endVertex.geometry
+                if abs(v1.x - min_x) <= OFFSET_TOL and abs(v2.x - min_x) <= OFFSET_TOL:
+                    edges_near_xmin.append(edge)
+
+            if not edges_near_xmin:
+                ui.messageBox("No edges found within 0.5in of min X.")
+                return
+
+            # --- Step 2: Compute Y/Z extrema from those edges ---
+            all_y = []
+            all_z = []
+            for e in edges_near_xmin:
+                for v in [e.startVertex.geometry, e.endVertex.geometry]:
+                    all_y.append(v.y)
+                    all_z.append(v.z)
+
+            y_max = max(all_y)
+            z_max = max(all_z)
+            z_min = min(all_z)
+
+            # --- Step 3: Filter for edges fully on Zmax, Zmin, or Ymax ---
+            selected_edges = []
+            seen = set()
+
+            def edge_key(e):
+                v1, v2 = e.startVertex.geometry, e.endVertex.geometry
+                return tuple(sorted([
+                    (round(v1.x,5), round(v1.y,5), round(v1.z,5)),
+                    (round(v2.x,5), round(v2.y,5), round(v2.z,5))
+                ]))
+
+            for e in edges_near_xmin:
+                v1 = e.startVertex.geometry
+                v2 = e.endVertex.geometry
+
+                # skip if both vertices are at y-min of entire body
+                body_ymin = min(v.geometry.y for v in exterior_body.vertices)
+                if abs(v1.y - body_ymin) < COORD_TOL and abs(v2.y - body_ymin) < COORD_TOL:
+                    continue
+
+                if (
+                    (abs(v1.z - z_max) < COORD_TOL and abs(v2.z - z_max) < COORD_TOL)
+                    or (abs(v1.z - z_min) < COORD_TOL and abs(v2.z - z_min) < COORD_TOL)
+                    or (abs(v1.y - y_max) < COORD_TOL and abs(v2.y - y_max) < COORD_TOL)
+                ):
+                    k = edge_key(e)
+                    if k not in seen:
+                        seen.add(k)
+                        selected_edges.append(e)
+
+            if not selected_edges:
+                ui.messageBox("No edges found for Return EM (after filtering).")
+                return
+
+            # --- Step 4: Apply to CAM operation ---
+            ui.workspaces.itemById("CAMEnvironment").activate()
+            cam = adsk.cam.CAM.cast(app.activeProduct)
+            setup = cam.setups.itemByName("Charles")
+            if not setup:
+                ui.messageBox("Setup 'Charles' not found.")
+                return
+
+            op = setup.operations.itemByName("Return EM")
+            if not op:
+                ui.messageBox("Operation 'Return EM' not found.")
+                return
+
+            contourParam = op.parameters.itemByName("contours").value
+            curveSelections = contourParam.getCurveSelections()
+            curveSelections.clear()
+
+            chain = curveSelections.createNewChainSelection()
+            chain.isOpen = True
+            chain.isReverted = True
+            chain.startExtensionLength = in_mm(3.0)
+            chain.endExtensionLength = in_mm(3.0)
+            chain.inputGeometry = selected_edges
+
+            contourParam.applyCurveSelections(curveSelections)
+            cam.generateToolpath(op)
+
+    except:
+        ui.messageBox(f"westReturnEMGeometry(): failed:\n{traceback.format_exc()}")
+
+def westReturnGeometry():
+    try:
+        if west_return_result == adsk.core.DialogResults.DialogYes:
+            # --- CONFIG ---
+            OFFSET_IN = 0.5
+            COORD_TOL = 1e-4
+
+            offset = in_cm(OFFSET_IN)
+
+            # --- FIND BODY ---
+            exterior_body = None
+            for body in rootComp.bRepBodies:
+                if body.name == 'Exterior':
+                    exterior_body = body
+                    break
+
+            # --- FIND PLANAR FACES PARALLEL TO YZ (normal ±X) ---
+            min_x = min(v.geometry.x for v in exterior_body.vertices)
+            target_faces = []
+
+            for face in exterior_body.faces:
+                geom = face.geometry
+                if not isinstance(geom, adsk.core.Plane):
+                    continue
+
+                evaluator = face.evaluator
+                param = adsk.core.Point2D.create(0.5, 0.5)
+                success, normal_vec = evaluator.getNormalAtParameter(param)
+                if not success:
+                    continue
+
+                # Ensure normal is mostly ±X (parallel to YZ)
+                if abs(normal_vec.x) < 0.999:
+                    continue
+
+                face_x = face.boundingBox.minPoint.x
+                if abs(face_x - min_x) < COORD_TOL or abs(face_x - (min_x + offset)) < COORD_TOL:
+                    target_faces.append(face)
+
+            if not target_faces:
+                ui.messageBox("No faces found parallel to YZ at max X or 0.5in behind.")
+                return
+
+            # --- SWITCH TO CAM WORKSPACE ---
+            ui.workspaces.itemById("CAMEnvironment").activate()
+
+            # --- GET CAM SETUP AND OP ---
+            doc = app.activeDocument
+            cam_product = doc.products.itemByProductType('CAMProductType')
+            cam = adsk.cam.CAM.cast(cam_product)
+            setup = cam.setups.itemByName('Charles')
+            op = setup.operations.itemByName('Return FM')
+
+            # --- GET FACE PARAMETER ---
+            contourParam: adsk.cam.CadContours2dParameterValue = op.parameters.itemByName('stockContours').value
+            curveSelections = contourParam.getCurveSelections()
+            curveSelections.clear()
+
+            # --- CREATE FACE SELECTIONS ---
+            new_selection_list = adsk.core.ObjectCollection.create()
+            for face in target_faces:
+                fc: adsk.cam.FaceContourSelection = curveSelections.createNewFaceContourSelection()
+                fc.loopType = adsk.cam.LoopTypes.AllLoops
+                fc.sideType = adsk.cam.SideTypes.StartOutsideSideType
+                fc.inputGeometry = [face]
+                new_selection_list.add(fc)
+
+            curveSelections.curveSelections = new_selection_list
+            contourParam.applyCurveSelections(curveSelections)
+            cam.generateToolpath(op)
+         
+    except:
+        ui.messageBox(f"westReturnGeometry(): failed:\n{traceback.format_exc()}")
+
+def westReturnBrickGeometry():
+    try:
+        # --- Run only if one of them is true ---
+        if not idWestReturnBrickDetail():
+            #ui.messageBox("No return brick detail active.")
+            return
+
+        # --- Switch to Fusion workspace ---
+        ui.workspaces.itemById("FusionSolidEnvironment").activate()
+        design = adsk.fusion.Design.cast(app.activeProduct)
+        rootComp = design.rootComponent
+        COORD_TOL = 1e-4
+
+        # --- FIND BODY ---
+        exterior_body = None
+        for body in rootComp.bRepBodies:
+            if body.name == "Exterior":
+                exterior_body = body
+                break
+        if not exterior_body:
+            ui.messageBox("No 'Exterior' body found.")
+            return
+
+        # --- Determine whether we’re doing East or West ---
+        find_min_x = idWestReturnBrickDetail
+
+        all_x = [v.geometry.x for v in exterior_body.vertices]
+        target_x = min(all_x) if find_min_x else min(all_x)
+
+        # --- FIND TARGET FACE (parallel to YZ plane, at target X) ---
+        target_face = None
+        for face in exterior_body.faces:
+            geom = face.geometry
+            if not isinstance(geom, adsk.core.Plane):
+                continue
+
+            evaluator = face.evaluator
+            param = adsk.core.Point2D.create(0.5, 0.5)
+            success, normal_vec = evaluator.getNormalAtParameter(param)
+            if not success:
+                continue
+
+            # We only want faces roughly parallel to YZ (normal ±X)
+            if abs(normal_vec.x) < 0.999:
+                continue
+
+            face_x = (
+                face.boundingBox.minPoint.x if find_min_x else face.boundingBox.minPoint.x
+            )
+            if abs(face_x - target_x) < COORD_TOL:
+                target_face = face
+                break
+
+        if not target_face:
+            ui.messageBox(
+                f"No face found at {'min' if find_min_x else 'min'} X ({target_x:.3f})."
+            )
+            return
+
+        # --- FIND Y-ORIENTED EDGES ON THAT FACE ---
+        y_edges = []
+        for edge in target_face.edges:
+            sv = edge.startVertex.geometry
+            ev = edge.endVertex.geometry
+            dx = abs(ev.x - sv.x)
+            dy = abs(ev.y - sv.y)
+            dz = abs(ev.z - sv.z)
+            if dy > dx and dy > dz:
+                y_edges.append(edge)
+
+        if len(y_edges) < 2:
+            ui.messageBox(
+                f"Found only {len(y_edges)} Y-oriented edges on target face at X={target_x:.3f}."
+            )
+            return
+
+        # --- SWITCH TO CAM WORKSPACE ---
+        ui.workspaces.itemById("CAMEnvironment").activate()
+
+        # --- GET SETUP AND OP ---
+        doc = app.activeDocument
+        cam_product = doc.products.itemByProductType("CAMProductType")
+        cam = adsk.cam.CAM.cast(cam_product)
+        setup = cam.setups.itemByName("Charles")
+        if not setup:
+            ui.messageBox("Setup 'Charles' not found.")
+            return
+
+        op = setup.operations.itemByName("Return Brick FM")
+        if not op:
+            ui.messageBox("Operation 'Return Brick FM' not found.")
+            return
+
+        # --- APPLY CHAINS ---
+        contourParam: adsk.cam.CadContours2dParameterValue = op.parameters.itemByName(
+            "contours"
+        ).value
+
+        try:
+            curveSelections = contourParam.getCurveSelections()
+        except:
+            curveSelections = contourParam
+
+        curveSelections.clear()
+
+        for edge in y_edges[:2]:  # Only use two Y-axis edges
+            chain = curveSelections.createNewChainSelection()
+            chain.isOpen = True
+            chain.reverse = False
+            chain.startExtensionLength = in_mm(5.0)
+            chain.endExtensionLength = in_mm(5.0)
+            chain.inputGeometry = [edge]
+
+        contourParam.applyCurveSelections(curveSelections)
+        cam.generateToolpath(op)
+
+    except:
+        ui.messageBox(f"westReturnBrickGeometry(): failed:\n{traceback.format_exc()}")
 
 def showBodies():
     try:
