@@ -1,5 +1,5 @@
 # Autodesk Fusion CAM Automation Script
-**Version:** 1.0  
+**Version:** 1.1
 **Author:** Andy Hughes 
 
 ---
