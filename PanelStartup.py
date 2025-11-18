@@ -406,46 +406,49 @@ def mergeSheathing():
             finalBody = combineFeature.bodies.item(0)
             finalBody.name = "Sheathing"
 
+        ###########################
+        # 1. Find the target body ("Sheathing")
+        target_body = None
+        for body in rootComp.bRepBodies:
+            if body.name == 'Sheathing':
+                target_body = body
+                break
+
+        # Get initial body count to accurately find the new body after feature creation
+        initial_body_count = rootComp.bRepBodies.count
+
+        # 2. Use Offset Feature to create a NEW body from the faces of the target body
+        
+        features = rootComp.features
+        offset_faces_feature = features.offsetFeatures 
+
+        # Get all faces of the target body for input (includes inner loops)
+        faces_to_offset = adsk.core.ObjectCollection.create()
+        for face in target_body.faces:
+            faces_to_offset.add(face)
+
+        offset_distance = in_cm(-.062)
+        # Define the distance value
+        distance_value = adsk.core.ValueInput.createByReal(offset_distance)
+        
+        # Create the Offset Faces input, using NewBodyFeatureOperation to ensure a separate body is created
+        offset_input = offset_faces_feature.createInput(
+            faces_to_offset, 
+            distance_value,
+            adsk.fusion.FeatureOperations.NewBodyFeatureOperation # Critical: Creates a new body
+        )
+        
+        offset_faces_feature.add(offset_input)
+        
+        # 3. Find and rename the newly created body
+        if rootComp.bRepBodies.count > initial_body_count:
+            # The new body is the last one added to the component's body collection
+            new_stock_body = rootComp.bRepBodies.item(rootComp.bRepBodies.count - 1)
+            new_stock_body.name = 'Sheathing Stock'
+
     except:
         if 'ui' in locals():
             ui.messageBox(f"mergeSheathing(): failed:\n{traceback.format_exc()}")
-
-def mergeSheathingOld():
-    try:
-        # Make copies and rename them "SheathingCopy"
-        copy_bodies = []
-        for body in rootComp.bRepBodies:
-            if body.name.startswith("SheathingPanel"):
-                body.isVisible = False
-                body_copy = body.copyToComponent(rootComp)
-                body_copy.name = "SheathingCopy"
-                copy_bodies.append(body_copy)
-                
-
-        # Keep merging until only one "Sheathing" body remains
-        for _ in range(2):  # Run up to twice
-            bodies_to_merge = []
-
-            for body in rootComp.bRepBodies:
-                if body.name.startswith("SheathingCopy"):
-                    bodies_to_merge.append(body)
-
-                if len(bodies_to_merge) <= 1:
-                    break  # Done merging
-
-            combineFeatures = rootComp.features.combineFeatures
-            targetBody = bodies_to_merge[0]
-            for toolBody in bodies_to_merge[1:]:
-                toolBodies = adsk.core.ObjectCollection.create()
-                toolBodies.add(toolBody)
-                combineInput = combineFeatures.createInput(targetBody, toolBodies)
-                combineInput.operation = adsk.fusion.FeatureOperations.JoinFeatureOperation
-                combineFeature = combineFeatures.add(combineInput)
-                targetBody = combineFeature.bodies.item(0)
-                targetBody.name = "Sheathing"
-
-    except:
-        ui.messageBox(f"mergeSheathing(): failed:\n{traceback.format_exc()}")
 
 def modSheathing():
     try:
@@ -1221,9 +1224,8 @@ def melvinOrigin():
         # This tries to set the WCS X axis to location identified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
         if east_return_result == adsk.core.DialogResults.DialogYes:
             if any("Stud" in body.name for body in rootComp.bRepBodies):
-                offset_x = stud_max_point.x
-                difference = abs((abs(max_x)) - (abs(stud_max_point.x)) / 2.54)
-                if not abs(difference - 0.063) >= .002 or abs(difference - 4.625 >= .002): #Probably need sheathing width as well.
+                difference = round(((abs(min_x)) - (abs(stud_min_point.x))) / 2.54,3)
+                if difference != 4.688: #Probably need sheathing width as well.
                     addMessage(f"There may be an issue with the Melvin WCS X axis. \n    \u2022 Difference between 'Stud' and 'Exterior' bodies: {difference:.3f}in")
             else:
                 offset_x = corner_x - in_cm(4.6875)
@@ -1232,10 +1234,9 @@ def melvinOrigin():
         if east_return_result == adsk.core.DialogResults.DialogYes:
             if any("Track" in body.name for body in rootComp.bRepBodies):
                 offset_z = track_max_point.z
-                difference = abs((abs(max_z)) - (abs(track_max_point.z)) / 2.54)
-                if abs(difference - 0.063) > .002:
+                difference = round(((abs(max_z)) - (abs(stud_max_point.z))) / 2.54,3)
+                if difference != .063:
                     addMessage(f"There may be an issue with the Melvin WCS Y axis. \n    \u2022 Difference between 'Track' and 'Exterior' bodies: {difference:.3f}in")
-           
             else:
                 offset_z = corner_z - in_cm(0.0625)
 
@@ -1275,17 +1276,19 @@ def melvinOrigin():
         if west_return_result == adsk.core.DialogResults.DialogYes:
             if any("Stud" in body.name for body in rootComp.bRepBodies):
                 bl_offset_x = stud_min_point.x
-                if (abs(min_x)) - (abs(stud_min_point.x)) != in_cm(0.0625) or in_cm(4.6875): #Probably need sheathing width as well.
-                    addMessage("There may be an issue with the Melvin 'Flipped' WCS X axis")
+                x_position = round(((abs(min_x)) - (abs(stud_min_point.x))) / 2.54,3)
+                if x_position != 4.688: #Probably need sheathing width as well.
+                    addMessage(f"There may be an issue with the Melvin 'Flipped' WCS X axis. X = {x_position}")
             else:
                 bl_offset_x = bl_corner_x + in_cm(4.6875)
 
         # This tries to set the WCS Y axis to location identified in 'identifyOrigin()' function. If not, it uses a default hardcode offset.
         if west_return_result == adsk.core.DialogResults.DialogYes:
             if any("Track" in body.name for body in rootComp.bRepBodies):
-                bl_offset_x = bl_corner_x - (abs(track_min_point.z))
-                if (abs(max_z)) - (abs(track_max_point.z)) != in_cm(0.0625):
-                    addMessage("There may be an issue with the Melvin 'Flipped' WCS Y axis")
+                bl_offset_z = track_min_point.z
+                z_position = round(((abs(min_z)) - (abs(track_min_point.z))) / 2.54,3)
+                if z_position != 0.063:
+                    addMessage(f"There may be an issue with the Melvin 'Flipped' WCS Y axis. Y = {z_position}")
             else:
                 offset_z = corner_z - in_cm(0.0625)
 
@@ -1537,7 +1540,7 @@ def melvinSetup():
             setup.machine = found_machine
 
             # Select Stock for Melvin setup
-            stock_body = rootComp.bRepBodies.itemByName('Sheathing')
+            stock_body = rootComp.bRepBodies.itemByName('Sheathing Stock')
 
             # Change stock mode
             prmStockMode = setup.parameters.itemByName('job_stockMode')
